@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Gauge, Map as MapIcon, History, Play, Square, BrainCircuit, AlertTriangle, ChevronRight, Settings, X, Key, Wrench } from 'lucide-react';
+import { Activity, Gauge, Map as MapIcon, History, Play, Square, BrainCircuit, AlertTriangle, ChevronRight, Settings, X, Key, Wrench, Shield, Eye, EyeOff, Trash2 } from 'lucide-react';
+import { useJsApiLoader } from '@react-google-maps/api';
 import { motion, AnimatePresence } from 'motion/react';
 import { OBDData, Trip, DamagePoint, TripEvent, SensorPoint, NavigationState } from './types';
 import { cn } from './lib/utils';
@@ -17,6 +18,9 @@ import MusicPlayer, { MusicPlayerHandle } from './components/MusicPlayer';
 import MaintenanceTab from './components/MaintenanceTab';
 import { runAIDiagnosis } from './services/geminiService';
 import { MaintenanceTask } from './types';
+
+const DEFAULT_MAPS_KEY = "";
+const libraries: ("places" | "routes" | "geocoding" | "core")[] = ["places", "routes", "geocoding", "core"];
 
 export default function App() {
   const musicPlayerRef = useRef<MusicPlayerHandle>(null);
@@ -54,13 +58,22 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [currentTrip, setCurrentTrip] = useState<Partial<Trip> | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showApiKeys, setShowApiKeys] = useState(false);
   const [sensorHistory, setSensorHistory] = useState<SensorPoint[]>([]);
   const [apiKeys, setApiKeys] = useState({
     gemini: localStorage.getItem('ztcd_gemini_api_key') || process.env.GEMINI_API_KEY || '',
-    maps: localStorage.getItem('ztcd_maps_api_key') || '',
+    maps: localStorage.getItem('ztcd_maps_api_key') || import.meta.env.VITE_MAPS_API_KEY || DEFAULT_MAPS_KEY,
+  });
+
+  const { isLoaded: isMapsLoaded } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: apiKeys.maps,
+    libraries
   });
   const [isSimulation, setIsSimulation] = useState(true);
   const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [connectedDeviceName, setConnectedDeviceName] = useState<string | null>(null);
   const [bluetoothDevice, setBluetoothDevice] = useState<BluetoothDevice | null>(null);
   const [obdCharacteristic, setObdCharacteristic] = useState<BluetoothRemoteGATTCharacteristic | null>(null);
   const [totalMileage, setTotalMileage] = useState(() => {
@@ -275,34 +288,33 @@ export default function App() {
   ] as const;
 
   // Real OBD-II Connection Logic
-  const connectToOBD = async () => {
+  const connectToOBD = async (existingDevice?: BluetoothDevice) => {
     try {
       if (!navigator.bluetooth) {
         throw new Error("Bluetooth is not supported in this browser. Please use Chrome or Edge on a compatible device.");
       }
 
-      // Broaden discovery to avoid "User cancelled" due to device not appearing in filtered list
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [
-          { namePrefix: 'OBD' },
-          { namePrefix: 'V-LINK' },
-          { namePrefix: 'ELM' },
-          { namePrefix: 'IOS-Vlink' }
-        ],
-        optionalServices: [
-          '0000fff0-0000-1000-8000-00805f9b34fb', 
-          '0000ffe0-0000-1000-8000-00805f9b34fb',
-          '000018f0-0000-1000-8000-00805f9b34fb' // Standard OBD-II service
-        ]
-      }).catch(err => {
-        if (err.name === 'NotFoundError') {
-          throw new Error("No device selected or found. Ensure your OBD-II adapter is powered on and in pairing mode.");
-        }
-        if (err.name === 'SecurityError') {
-          throw new Error("Bluetooth permission denied. Please allow Bluetooth access in your browser settings.");
-        }
-        throw err;
-      });
+      let device = existingDevice;
+
+      if (!device) {
+        // Broaden discovery to avoid "User cancelled" due to device not appearing in filtered list
+        device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [
+            '0000fff0-0000-1000-8000-00805f9b34fb', 
+            '0000ffe0-0000-1000-8000-00805f9b34fb',
+            '000018f0-0000-1000-8000-00805f9b34fb' // Standard OBD-II service
+          ]
+        }).catch(err => {
+          if (err.name === 'NotFoundError') {
+            throw new Error("No device selected or found. Ensure your OBD-II adapter is powered on and in pairing mode.");
+          }
+          if (err.name === 'SecurityError') {
+            throw new Error("Bluetooth permission denied. Please allow Bluetooth access in your browser settings.");
+          }
+          throw err;
+        });
+      }
 
       setConnectionStatus('connecting');
 
@@ -313,6 +325,21 @@ export default function App() {
       if (!device.gatt) {
         throw new Error("GATT server is unavailable on this device.");
       }
+
+      const handleDisconnect = async () => {
+        console.log("Bluetooth disconnected. Attempting to reconnect...");
+        setConnectionStatus('connecting');
+        try {
+          // Attempt to reconnect after a short delay
+          setTimeout(() => connectToOBD(device), 2000);
+        } catch (e) {
+          console.error("Auto-reconnect failed", e);
+          setConnectionStatus('disconnected');
+          setConnectedDeviceName(null);
+        }
+      };
+
+      device.addEventListener('gattserverdisconnected', handleDisconnect);
 
       // Add a timeout to the connection attempt
       const connectPromise = device.gatt.connect();
@@ -332,6 +359,7 @@ export default function App() {
       if (!characteristic) throw new Error("No suitable communication characteristic found. The adapter may not be fully compatible.");
 
       setBluetoothDevice(device);
+      setConnectedDeviceName(device.name || 'Unknown Bluetooth OBD-II');
       setObdCharacteristic(characteristic);
       setIsSimulation(false);
       setConnectionStatus('connected');
@@ -340,16 +368,243 @@ export default function App() {
       startOBDPoll(characteristic);
     } catch (error) {
       setConnectionStatus('disconnected');
+      setConnectedDeviceName(null);
       const message = error instanceof Error ? error.message : "An unexpected Bluetooth error occurred.";
       console.error("Bluetooth Error:", message);
       throw new Error(message);
     }
   };
 
+  const parseOBDResponse = (buffer: string) => {
+    const lines = buffer.split(/[\r\n]+/);
+    lines.forEach(line => {
+      const cleanLine = line.replace(/\s+/g, '').toUpperCase();
+      
+      // Parse RPM (010C -> 41 0C A B)
+      if (cleanLine.includes('410C')) {
+        const idx = cleanLine.indexOf('410C');
+        const a = parseInt(cleanLine.substring(idx + 4, idx + 6), 16);
+        const b = parseInt(cleanLine.substring(idx + 6, idx + 8), 16);
+        if (!isNaN(a) && !isNaN(b)) {
+          const rpm = ((a * 256) + b) / 4;
+          setObdData(prev => ({ ...prev, rpm: Math.round(rpm), timestamp: Date.now() }));
+        }
+      }
+      
+      // Parse Speed (010D -> 41 0D A)
+      if (cleanLine.includes('410D')) {
+        const idx = cleanLine.indexOf('410D');
+        const a = parseInt(cleanLine.substring(idx + 4, idx + 6), 16);
+        if (!isNaN(a)) {
+          setObdData(prev => ({ ...prev, speed: a, timestamp: Date.now() }));
+        }
+      }
+
+      // Parse Coolant Temp (0105 -> 41 05 A)
+      if (cleanLine.includes('4105')) {
+        const idx = cleanLine.indexOf('4105');
+        const a = parseInt(cleanLine.substring(idx + 4, idx + 6), 16);
+        if (!isNaN(a)) {
+          setObdData(prev => ({ ...prev, coolantTemp: a - 40, timestamp: Date.now() }));
+        }
+      }
+
+      // Parse DTCs (03 -> 43 01 02 03 04 05 06)
+      if (cleanLine.includes('43')) {
+        const idx = cleanLine.indexOf('43');
+        const codesData = cleanLine.substring(idx + 2);
+        const codes: string[] = [];
+        for (let i = 0; i < codesData.length - 3; i += 4) {
+          const code = codesData.substring(i, i + 4);
+          if (code !== '0000' && /^[0-9A-F]{4}$/.test(code)) {
+            const prefix = ['P', 'C', 'B', 'U'][parseInt(code[0], 16) >> 2];
+            if (prefix) {
+              codes.push(prefix + code.substring(1));
+            }
+          }
+        }
+        if (codes.length > 0) {
+          setObdData(prev => ({ ...prev, dtcs: codes, timestamp: Date.now() }));
+        }
+      }
+
+      // Parse Readiness (0101 -> 41 01 A B C D)
+      if (cleanLine.includes('4101')) {
+        const idx = cleanLine.indexOf('4101');
+        const b = parseInt(cleanLine.substring(idx + 6, idx + 8), 16);
+        const c = parseInt(cleanLine.substring(idx + 8, idx + 10), 16);
+        if (!isNaN(b) && !isNaN(c)) {
+          setObdData(prev => ({
+            ...prev,
+            readiness: {
+              misfire: !(b & 0x01),
+              fuelSystem: !(b & 0x02),
+              components: !(b & 0x04),
+              catalyst: !(c & 0x01),
+              evap: !(c & 0x04),
+              oxygenSensor: !(c & 0x10),
+            },
+            timestamp: Date.now()
+          }));
+        }
+      }
+    });
+  };
+
+  const connectToSerialOBD = async (existingPort?: any) => {
+    try {
+      if (!('serial' in navigator)) {
+        throw new Error("Web Serial API is not supported in this browser. Please use Chrome or Edge on desktop.");
+      }
+
+      const port = existingPort || await (navigator as any).serial.requestPort();
+      await port.open({ baudRate: 38400 }); // Standard baud rate for ELM327 / 1260 USB cables
+
+      setConnectionStatus('connecting');
+      setIsSimulation(false);
+      
+      const portInfo = port.getInfo();
+      const deviceName = portInfo.usbProductId 
+        ? `USB Serial Device (${portInfo.usbVendorId?.toString(16)}:${portInfo.usbProductId?.toString(16)})` 
+        : 'USB Serial Device';
+      setConnectedDeviceName(deviceName);
+
+      const handleDisconnect = () => {
+        console.log("Serial disconnected.");
+        setConnectionStatus('disconnected');
+        setConnectedDeviceName(null);
+        // Auto-reconnect for serial is handled by the global 'connect' event listener in OBDTab
+      };
+
+      (navigator as any).serial.addEventListener('disconnect', (event: any) => {
+        if (event.target === port) {
+          handleDisconnect();
+        }
+      });
+      
+      startSerialOBDPoll(port);
+      setConnectionStatus('connected');
+    } catch (error: any) {
+      setConnectionStatus('disconnected');
+      setConnectedDeviceName(null);
+      let message = error instanceof Error ? error.message : "An unexpected Serial error occurred.";
+      if (error.name === 'SecurityError' || message.includes('permissions policy')) {
+        message = "Serial port access is blocked by the browser. Please open the app in a new tab to use USB Serial.";
+      }
+      console.error("Serial Error:", message);
+      throw new Error(message);
+    }
+  };
+
+  const startSerialOBDPoll = async (port: any) => {
+    const textEncoder = new TextEncoderStream();
+    const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+    const writer = textEncoder.writable.getWriter();
+
+    const textDecoder = new TextDecoderStream();
+    const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+    const reader = textDecoder.readable.getReader();
+
+    let buffer = '';
+    let isWaitingForPrompt = false;
+    let commandQueue: string[] = [];
+    let isProcessingQueue = false;
+    let isPollingActive = true;
+
+    const processQueue = async () => {
+      if (isProcessingQueue || commandQueue.length === 0 || isWaitingForPrompt || !isPollingActive) return;
+      
+      isProcessingQueue = true;
+      const cmd = commandQueue.shift();
+      if (cmd) {
+        isWaitingForPrompt = true;
+        try {
+          await writer.write(cmd + '\r');
+        } catch (e) {
+          console.warn("Command failed:", cmd, e);
+          isWaitingForPrompt = false;
+        }
+      }
+      isProcessingQueue = false;
+    };
+
+    const readLoop = async () => {
+      try {
+        while (isPollingActive) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            buffer += value;
+            if (buffer.includes('>')) {
+              parseOBDResponse(buffer);
+              buffer = '';
+              isWaitingForPrompt = false;
+              processQueue();
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Serial read error:", error);
+      } finally {
+        reader.releaseLock();
+      }
+    };
+
+    readLoop();
+
+    const queueCommand = (cmd: string) => {
+      commandQueue.push(cmd);
+      processQueue();
+    };
+
+    queueCommand('ATZ');
+    queueCommand('ATE0');
+    queueCommand('ATL0');
+    queueCommand('ATH0');
+    queueCommand('ATSP0');
+
+    const pollInterval = setInterval(() => {
+      if (!isPollingActive) {
+        clearInterval(pollInterval);
+        return;
+      }
+      if (commandQueue.length < 3) {
+        queueCommand('010C');
+        queueCommand('010D');
+        queueCommand('0105');
+        if (Math.random() > 0.8) {
+          queueCommand('0101');
+          queueCommand('03');
+        }
+      }
+    }, 1000);
+  };
+
   const startOBDPoll = async (char: BluetoothRemoteGATTCharacteristic) => {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     let buffer = '';
+    let isWaitingForPrompt = false;
+    let commandQueue: string[] = [];
+    let isProcessingQueue = false;
+    let isPollingActive = true;
+
+    const processQueue = async () => {
+      if (isProcessingQueue || commandQueue.length === 0 || isWaitingForPrompt || !isPollingActive) return;
+      
+      isProcessingQueue = true;
+      const cmd = commandQueue.shift();
+      if (cmd) {
+        isWaitingForPrompt = true;
+        try {
+          await char.writeValue(encoder.encode(cmd + '\r'));
+        } catch (e) {
+          console.warn("Command failed:", cmd, e);
+          isWaitingForPrompt = false; // Reset on failure
+        }
+      }
+      isProcessingQueue = false;
+    };
 
     const handleData = (event: Event) => {
       const value = (event.target as BluetoothRemoteGATTCharacteristic).value;
@@ -359,68 +614,10 @@ export default function App() {
       buffer += chunk;
 
       if (buffer.includes('>')) {
-        const lines = buffer.split(/[\r\n]+/);
-        lines.forEach(line => {
-          const cleanLine = line.replace(/\s+/g, '').toUpperCase();
-          
-          // Parse RPM (010C -> 41 0C A B)
-          if (cleanLine.startsWith('410C')) {
-            const a = parseInt(cleanLine.substring(4, 6), 16);
-            const b = parseInt(cleanLine.substring(6, 8), 16);
-            if (!isNaN(a) && !isNaN(b)) {
-              const rpm = ((a * 256) + b) / 4;
-              setObdData(prev => ({ ...prev, rpm: Math.round(rpm), timestamp: Date.now() }));
-            }
-          }
-          
-          // Parse Speed (010D -> 41 0D A)
-          if (cleanLine.startsWith('410D')) {
-            const a = parseInt(cleanLine.substring(4, 6), 16);
-            if (!isNaN(a)) {
-              setObdData(prev => ({ ...prev, speed: a, timestamp: Date.now() }));
-            }
-          }
-
-          // Parse Coolant Temp (0105 -> 41 05 A)
-          if (cleanLine.startsWith('4105')) {
-            const a = parseInt(cleanLine.substring(4, 6), 16);
-            if (!isNaN(a)) {
-              setObdData(prev => ({ ...prev, coolantTemp: a - 40, timestamp: Date.now() }));
-            }
-          }
-
-          // Parse DTCs (03 -> 43 01 02 03 04 05 06)
-          if (cleanLine.startsWith('43')) {
-            const codes: string[] = [];
-            for (let i = 2; i < cleanLine.length - 3; i += 4) {
-              const code = cleanLine.substring(i, i + 4);
-              if (code !== '0000') {
-                const prefix = ['P', 'C', 'B', 'U'][parseInt(code[0], 16) >> 2];
-                codes.push(prefix + code.substring(1));
-              }
-            }
-            setObdData(prev => ({ ...prev, dtcs: codes, timestamp: Date.now() }));
-          }
-
-          // Parse Readiness (0101 -> 41 01 A B C D)
-          if (cleanLine.startsWith('4101')) {
-            const b = parseInt(cleanLine.substring(6, 8), 16);
-            const c = parseInt(cleanLine.substring(8, 10), 16);
-            setObdData(prev => ({
-              ...prev,
-              readiness: {
-                misfire: !(b & 0x01),
-                fuelSystem: !(b & 0x02),
-                components: !(b & 0x04),
-                catalyst: !(c & 0x01),
-                evap: !(c & 0x04),
-                oxygenSensor: !(c & 0x10),
-              },
-              timestamp: Date.now()
-            }));
-          }
-        });
+        parseOBDResponse(buffer);
         buffer = ''; // Reset buffer after prompt
+        isWaitingForPrompt = false;
+        processQueue();
       }
     };
 
@@ -429,43 +626,62 @@ export default function App() {
       char.addEventListener('characteristicvaluechanged', handleData);
     }
 
-    const sendCommand = async (cmd: string) => {
-      try {
-        await char.writeValue(encoder.encode(cmd + '\r'));
-      } catch (e) {
-        console.warn("Command failed:", cmd, e);
-      }
+    const queueCommand = (cmd: string) => {
+      commandQueue.push(cmd);
+      processQueue();
     };
 
     // ELM327 Initial Setup
-    await sendCommand('ATZ');    // Reset
-    await new Promise(r => setTimeout(r, 1000));
-    await sendCommand('ATE0');   // Echo off
-    await sendCommand('ATL0');   // Linefeeds off
-    await sendCommand('ATH0');   // Headers off
-    await sendCommand('ATSP0');  // Auto protocol
+    queueCommand('ATZ');    // Reset
+    queueCommand('ATE0');   // Echo off
+    queueCommand('ATL0');   // Linefeeds off
+    queueCommand('ATH0');   // Headers off
+    queueCommand('ATSP0');  // Auto protocol
 
     // Polling Loop
-    const pollInterval = setInterval(async () => {
+    const pollInterval = setInterval(() => {
       if (!char.service.device.gatt?.connected) {
         clearInterval(pollInterval);
+        isPollingActive = false;
         return;
       }
-      await sendCommand('010C'); // RPM
-      await new Promise(r => setTimeout(r, 200));
-      await sendCommand('010D'); // Speed
-      await new Promise(r => setTimeout(r, 200));
-      await sendCommand('0105'); // Coolant
-      await new Promise(r => setTimeout(r, 200));
-      await sendCommand('0101'); // Readiness
-      await new Promise(r => setTimeout(r, 200));
-      await sendCommand('03');   // DTCs
-    }, 2000);
+      
+      // Only queue new commands if the queue is relatively empty to prevent buildup
+      if (commandQueue.length < 3) {
+        queueCommand('010C'); // RPM
+        queueCommand('010D'); // Speed
+        queueCommand('0105'); // Coolant
+        
+        // Poll readiness and DTCs less frequently (e.g., every 5th cycle)
+        if (Math.random() > 0.8) {
+          queueCommand('0101'); // Readiness
+          queueCommand('03');   // DTCs
+        }
+      }
+    }, 1000); // Poll every second
   };
 
   const saveApiKeys = () => {
     localStorage.setItem('ztcd_gemini_api_key', apiKeys.gemini);
     localStorage.setItem('ztcd_maps_api_key', apiKeys.maps);
+    setShowSettings(false);
+  };
+
+  const clearCachedData = () => {
+    localStorage.removeItem('ztcd_gemini_api_key');
+    localStorage.removeItem('ztcd_maps_api_key');
+    localStorage.removeItem('ztcd_trips');
+    localStorage.removeItem('ztcd_mileage');
+    localStorage.removeItem('ztcd_maintenance');
+    
+    // Reset state
+    setApiKeys({
+      gemini: process.env.GEMINI_API_KEY || '',
+      maps: import.meta.env.VITE_MAPS_API_KEY || DEFAULT_MAPS_KEY,
+    });
+    setTrips([]);
+    setTotalMileage(0);
+    setMaintenanceTasks([]);
     setShowSettings(false);
   };
 
@@ -560,7 +776,9 @@ export default function App() {
                 data={obdData} 
                 isSimulation={isSimulation} 
                 connectionStatus={connectionStatus}
+                connectedDeviceName={connectedDeviceName}
                 onConnectReal={connectToOBD} 
+                onConnectSerial={connectToSerialOBD}
               />
             )}
             {activeTab === 'damage' && (
@@ -571,6 +789,7 @@ export default function App() {
                 trips={trips} 
                 isRecording={isRecording}
                 mapsApiKey={apiKeys.maps}
+                isMapsLoaded={isMapsLoaded}
                 onUpdateTrip={(updatedTrip) => {
                   setTrips(prev => prev.map(t => t.id === updatedTrip.id ? updatedTrip : t));
                 }}
@@ -583,6 +802,7 @@ export default function App() {
                 navigation={navigation}
                 setNavigation={setNavigation}
                 mapsApiKey={apiKeys.maps}
+                isMapsLoaded={isMapsLoaded}
               />
             )}
             {activeTab === 'maintenance' && (
@@ -603,7 +823,7 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      <FloatingMap navigation={navigation} setNavigation={setNavigation} mapsApiKey={apiKeys.maps} />
+      <FloatingMap navigation={navigation} setNavigation={setNavigation} mapsApiKey={apiKeys.maps} isMapsLoaded={isMapsLoaded} />
 
       <MusicPlayer ref={musicPlayerRef} />
 
@@ -628,7 +848,7 @@ export default function App() {
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="w-full max-w-sm glass-card p-6 rounded-3xl space-y-6"
+              className="w-full max-w-sm glass-card p-6 rounded-2xl space-y-6"
             >
               <div className="flex justify-between items-center">
                 <div className="flex items-center gap-3">
@@ -645,14 +865,48 @@ export default function App() {
                 </button>
               </div>
 
+              {/* Admin Mode Toggle (Mock for demonstration) */}
+              <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/10">
+                <div className="flex items-center gap-2">
+                  <Shield className="text-car-warning" size={16} />
+                  <span className="text-sm font-medium text-white">Admin Mode</span>
+                </div>
+                <button
+                  onClick={() => {
+                    setIsAdmin(!isAdmin);
+                    if (isAdmin) setShowApiKeys(false); // Reset visibility when leaving admin mode
+                  }}
+                  className={cn(
+                    "w-10 h-6 rounded-full transition-colors relative",
+                    isAdmin ? "bg-car-success" : "bg-white/20"
+                  )}
+                >
+                  <div className={cn(
+                    "absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform",
+                    isAdmin ? "translate-x-4" : "translate-x-0"
+                  )} />
+                </button>
+              </div>
+
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-mono flex items-center gap-2">
-                    <Key size={10} />
-                    Gemini API Key
-                  </label>
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] uppercase tracking-widest text-white/40 font-mono flex items-center gap-2">
+                      <Key size={10} />
+                      Gemini API Key
+                    </label>
+                    {isAdmin && (
+                      <button
+                        onClick={() => setShowApiKeys(!showApiKeys)}
+                        className="text-[10px] uppercase tracking-widest text-car-accent font-mono flex items-center gap-1 hover:text-car-accent/80 transition-colors"
+                      >
+                        {showApiKeys ? <EyeOff size={12} /> : <Eye size={12} />}
+                        {showApiKeys ? 'HIDE' : 'SHOW'}
+                      </button>
+                    )}
+                  </div>
                   <input 
-                    type="password"
+                    type={isAdmin && showApiKeys ? "text" : "password"}
                     value={apiKeys.gemini}
                     onChange={(e) => setApiKeys(prev => ({ ...prev, gemini: e.target.value }))}
                     placeholder="Enter Gemini API Key"
@@ -662,27 +916,49 @@ export default function App() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-mono flex items-center gap-2">
-                    <Key size={10} />
-                    Google Maps API Key
-                  </label>
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] uppercase tracking-widest text-white/40 font-mono flex items-center gap-2">
+                      <Key size={10} />
+                      Google Maps API Key
+                    </label>
+                    {isAdmin && (
+                      <button
+                        onClick={() => setShowApiKeys(!showApiKeys)}
+                        className="text-[10px] uppercase tracking-widest text-car-accent font-mono flex items-center gap-1 hover:text-car-accent/80 transition-colors"
+                      >
+                        {showApiKeys ? <EyeOff size={12} /> : <Eye size={12} />}
+                        {showApiKeys ? 'HIDE' : 'SHOW'}
+                      </button>
+                    )}
+                  </div>
                   <input 
-                    type="password"
+                    type={isAdmin && showApiKeys ? "text" : "password"}
                     value={apiKeys.maps}
                     onChange={(e) => setApiKeys(prev => ({ ...prev, maps: e.target.value }))}
                     placeholder="Enter Maps API Key"
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-car-accent transition-colors"
                   />
-                  <p className="text-[8px] text-white/20">Default: Environment Variable</p>
+                  <p className="text-[8px] text-white/20">
+                    {apiKeys.maps !== DEFAULT_MAPS_KEY ? "Key configured" : "Default: System Key (Restricted)"}
+                  </p>
                 </div>
               </div>
 
-              <button 
-                onClick={saveApiKeys}
-                className="w-full py-3 bg-car-accent text-white rounded-xl font-bold text-sm hover:bg-car-accent/80 transition-all"
-              >
-                SAVE CONFIGURATION
-              </button>
+              <div className="space-y-3">
+                <button 
+                  onClick={saveApiKeys}
+                  className="w-full py-3 bg-car-accent text-white rounded-xl font-bold text-sm hover:bg-car-accent/80 transition-all"
+                >
+                  SAVE CONFIGURATION
+                </button>
+                <button 
+                  onClick={clearCachedData}
+                  className="w-full py-3 bg-red-500/10 text-red-500 border border-red-500/20 rounded-xl font-bold text-sm hover:bg-red-500/20 transition-all flex items-center justify-center gap-2"
+                >
+                  <Trash2 size={16} />
+                  CLEAR CACHED DATA
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

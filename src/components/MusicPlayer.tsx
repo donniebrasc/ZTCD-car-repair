@@ -13,10 +13,10 @@ interface Song {
 }
 
 const PLAYLIST: Song[] = [
-  { id: '1', title: 'Midnight Drive', artist: 'Synthwave Pro', duration: '6:12', cover: 'https://picsum.photos/seed/music1/200/200', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
-  { id: '2', title: 'Cyber City', artist: 'Neon Dreams', duration: '7:05', cover: 'https://picsum.photos/seed/music2/200/200', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3' },
-  { id: '3', title: 'Electric Horizon', artist: 'Digital Nomad', duration: '5:44', cover: 'https://picsum.photos/seed/music3/200/200', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3' },
-  { id: '4', title: 'Techno Pulse', artist: 'Bass Master', duration: '5:02', cover: 'https://picsum.photos/seed/music4/200/200', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3' },
+  { id: '1', title: 'Midnight Drive', artist: 'Synthwave Pro', duration: '2:14', cover: 'https://picsum.photos/seed/music1/200/200', url: 'https://cdn.pixabay.com/audio/2022/05/27/audio_1808fbf07a.mp3' },
+  { id: '2', title: 'Cyber City', artist: 'Neon Dreams', duration: '2:08', cover: 'https://picsum.photos/seed/music2/200/200', url: 'https://cdn.pixabay.com/audio/2022/04/27/audio_308697920b.mp3' },
+  { id: '3', title: 'Electric Horizon', artist: 'Digital Nomad', duration: '2:30', cover: 'https://picsum.photos/seed/music3/200/200', url: 'https://cdn.pixabay.com/audio/2022/03/15/audio_c8b81755cb.mp3' },
+  { id: '4', title: 'Techno Pulse', artist: 'Bass Master', duration: '1:58', cover: 'https://picsum.photos/seed/music4/200/200', url: 'https://cdn.pixabay.com/audio/2022/01/18/audio_d0a13f69d2.mp3' },
 ];
 
 export interface MusicPlayerHandle {
@@ -24,12 +24,11 @@ export interface MusicPlayerHandle {
 }
 
 const MusicPlayer = forwardRef<MusicPlayerHandle>((props, ref) => {
-  const [isOpen, setIsOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSongIndex, setCurrentSongIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [currentTimeStr, setCurrentTimeStr] = useState('0:00');
-  const [isMini, setIsMini] = useState(false);
+  const [isMini, setIsMini] = useState(true);
   const [volume, setVolume] = useState(75);
   
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -37,7 +36,6 @@ const MusicPlayer = forwardRef<MusicPlayerHandle>((props, ref) => {
 
   useImperativeHandle(ref, () => ({
     control: (action: string) => {
-      setIsOpen(true); // Open player when voice command is used
       setIsMini(false); // Expand if mini
       
       switch (action) {
@@ -65,12 +63,22 @@ const MusicPlayer = forwardRef<MusicPlayerHandle>((props, ref) => {
 
   // Handle play/pause
   useEffect(() => {
-    if (audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.play().catch(e => console.error("Audio play failed:", e));
-      } else {
-        audioRef.current.pause();
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (isPlaying) {
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(e => {
+          // AbortError is expected when play() is interrupted by a new load request or pause()
+          if (e.name === 'AbortError') return;
+          
+          console.error("Audio play failed:", e);
+          setIsPlaying(false);
+        });
       }
+    } else {
+      audio.pause();
     }
   }, [isPlaying, currentSongIndex]);
 
@@ -121,17 +129,12 @@ const MusicPlayer = forwardRef<MusicPlayerHandle>((props, ref) => {
         onEnded={handleEnded}
       />
       
-      {/* Toggle Button */}
-      <button
-        onClick={() => setIsOpen(true)}
-        className="fixed bottom-40 left-4 z-50 w-12 h-12 rounded-full bg-white/5 border border-white/10 text-white shadow-lg flex items-center justify-center hover:bg-white/10 hover:scale-110 active:scale-95 transition-all group"
-      >
-        <Music size={20} className={cn("transition-all", isPlaying && "animate-pulse text-car-accent")} />
-      </button>
+      {/* Toggle Button Removed */}
 
       <AnimatePresence>
-        {isOpen && (
           <motion.div
+            drag
+            dragMomentum={false}
             initial={{ opacity: 0, scale: 0.9, y: 20, x: -20 }}
             animate={{ 
               opacity: 1, 
@@ -142,7 +145,7 @@ const MusicPlayer = forwardRef<MusicPlayerHandle>((props, ref) => {
               height: isMini ? 80 : 360
             }}
             exit={{ opacity: 0, scale: 0.9, y: 20, x: -20 }}
-            className="fixed bottom-40 left-4 z-[60] glass-card rounded-3xl overflow-hidden border border-white/10 shadow-2xl flex flex-col"
+            className="fixed bottom-40 left-4 z-[60] glass-card rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col"
           >
             {/* Header */}
             <div className="p-3 bg-white/5 flex items-center justify-between border-b border-white/5 shrink-0">
@@ -153,9 +156,6 @@ const MusicPlayer = forwardRef<MusicPlayerHandle>((props, ref) => {
               <div className="flex items-center gap-1">
                 <button onClick={() => setIsMini(!isMini)} className="p-1 hover:bg-white/10 rounded-lg text-white/40">
                   {isMini ? <Maximize2 size={12} /> : <Minimize2 size={12} />}
-                </button>
-                <button onClick={() => setIsOpen(false)} className="p-1 hover:bg-white/10 rounded-lg text-white/40">
-                  <X size={14} />
                 </button>
               </div>
             </div>
@@ -246,7 +246,6 @@ const MusicPlayer = forwardRef<MusicPlayerHandle>((props, ref) => {
               </div>
             )}
           </motion.div>
-        )}
       </AnimatePresence>
     </>
   );

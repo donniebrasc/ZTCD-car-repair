@@ -23,8 +23,7 @@ export interface ChatAssistantHandle {
 }
 
 const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onTabChange, onSetNavigation, onDiagnose, onMusicControl }, ref) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [isMini, setIsMini] = useState(false);
+  const [isMini, setIsMini] = useState(true);
   const [size, setSize] = useState({ width: 320, height: 450 });
   const [messages, setMessages] = useState<Message[]>([
     { id: '1', text: "Hello! I'm your ZTCD AI Assistant. How can I help you today?", sender: 'ai', timestamp: Date.now() }
@@ -41,7 +40,7 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
 
   useImperativeHandle(ref, () => ({
     toggleMic: () => {
-      setIsOpen(true);
+      setIsMini(false);
       startListening();
     }
   }));
@@ -144,6 +143,22 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
       return;
     }
 
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(track => track.stop());
+      }
+    } catch (err: any) {
+      console.error("Microphone access error:", err);
+      if (err.name === 'NotAllowedError' || err.message?.includes('Permission denied')) {
+        setMicError("Mic blocked");
+        isStartingRef.current = false;
+        return;
+      }
+      // If it's a NotFoundError or other error, we log it but still try to start SpeechRecognition
+      // which will handle its own errors gracefully.
+    }
+
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
     recognition.interimResults = false;
@@ -207,24 +222,14 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
 
   return (
     <>
-      {/* Floating Toggle Button */}
-      <button
-        onClick={() => setIsOpen(true)}
-        className="fixed bottom-24 left-4 z-50 w-12 h-12 rounded-full bg-car-accent text-white shadow-lg flex items-center justify-center hover:bg-car-accent/80 transition-all group"
-      >
-        <MessageSquare size={20} />
-        {micError && !isOpen && (
-          <div className="absolute -top-1 -right-1 w-4 h-4 bg-car-danger rounded-full border-2 border-car-bg flex items-center justify-center">
-            <AlertTriangle size={8} className="text-white" />
-          </div>
-        )}
-      </button>
+      {/* Floating Toggle Button Removed */}
 
       <AnimatePresence>
-        {isOpen && (
           <motion.div
             ref={resizeRef}
-            initial={{ opacity: 0, scale: 0.9, y: 20, x: -20 }}
+            drag
+            dragMomentum={false}
+            initial={{ opacity: 0, scale: 0.9, y: 20, x: 20 }}
             animate={{ 
               opacity: 1, 
               scale: 1, 
@@ -233,8 +238,8 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
               width: isMini ? 160 : size.width,
               height: isMini ? 120 : size.height
             }}
-            exit={{ opacity: 0, scale: 0.9, y: 20, x: -20 }}
-            className="fixed bottom-24 left-4 z-[60] glass-card rounded-3xl overflow-hidden border border-car-accent/30 shadow-2xl flex flex-col"
+            exit={{ opacity: 0, scale: 0.9, y: 20, x: 20 }}
+            className="fixed top-24 right-4 z-[60] glass-card rounded-2xl overflow-hidden border border-car-accent/30 shadow-2xl flex flex-col"
           >
             {/* Resize Handle (Top-Right) */}
             {!isMini && (
@@ -272,15 +277,6 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
                   title={isMini ? "Expand" : "Mini View"}
                 >
                   <Minimize2 size={12} className={cn(isMini && "rotate-180")} />
-                </button>
-                <button 
-                  onClick={() => {
-                    setIsOpen(false);
-                    window.speechSynthesis.cancel();
-                  }} 
-                  className="p-1 hover:bg-white/10 rounded-lg text-white/40"
-                >
-                  <X size={14} />
                 </button>
               </div>
             </div>
@@ -391,7 +387,6 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
               </div>
             )}
           </motion.div>
-        )}
       </AnimatePresence>
     </>
   );

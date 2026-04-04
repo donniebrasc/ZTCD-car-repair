@@ -9,6 +9,7 @@
       "DOM",
       "DOM.Iterable"
     ],
+    "types": ["vite/client", "web-bluetooth"],
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "isolatedModules": true,
@@ -21,8 +22,6 @@
       ]
     },
     "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "types": ["jest"]
-  },
-  "include": ["src", "jest.config.ts", "jest.setup.ts"]
+    "noEmit": true
+  }
 }

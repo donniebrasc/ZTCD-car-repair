@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BrainCircuit, AlertCircle, CheckCircle2, Zap, Thermometer, Gauge, Activity, Bluetooth, AlertTriangle, ShieldCheck, ShieldAlert, Info } from 'lucide-react';
+import { BrainCircuit, AlertCircle, CheckCircle2, Zap, Thermometer, Gauge, Activity, Bluetooth, AlertTriangle, ShieldCheck, ShieldAlert, Info, Usb } from 'lucide-react';
 import { OBDData } from '../types';
 import { runAIDiagnosis, fetchDTCDefinition } from '../services/geminiService';
 import { motion, AnimatePresence } from 'motion/react';
@@ -12,10 +12,12 @@ interface OBDTabProps {
   data: OBDData;
   isSimulation: boolean;
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
+  connectedDeviceName?: string | null;
   onConnectReal: () => Promise<void> | void;
+  onConnectSerial: (port?: any) => Promise<void> | void;
 }
 
-export default function OBDTab({ data, isSimulation, connectionStatus, onConnectReal }: OBDTabProps) {
+export default function OBDTab({ data, isSimulation, connectionStatus, connectedDeviceName, onConnectReal, onConnectSerial }: OBDTabProps) {
   const [diagnosis, setDiagnosis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
@@ -23,6 +25,55 @@ export default function OBDTab({ data, isSimulation, connectionStatus, onConnect
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [dtcDefinitions, setDtcDefinitions] = useState<Record<string, string>>({});
   const [isFetchingDtc, setIsFetchingDtc] = useState<Record<string, boolean>>({});
+  const [availablePorts, setAvailablePorts] = useState<any[]>([]);
+  const [selectedPortIndex, setSelectedPortIndex] = useState<number>(-1);
+
+  useEffect(() => {
+    const loadPorts = async () => {
+      if ('serial' in navigator) {
+        try {
+          const ports = await (navigator as any).serial.getPorts();
+          setAvailablePorts(ports);
+          if (ports.length > 0 && selectedPortIndex === -1) {
+            setSelectedPortIndex(0);
+          }
+        } catch (e: any) {
+          if (e.name === 'SecurityError' || (e.message && e.message.includes('permissions policy'))) {
+            console.warn("Serial ports access is restricted by permissions policy. You may need to open the app in a new tab to use USB Serial.");
+          } else {
+            console.error("Failed to get serial ports", e);
+          }
+        }
+      }
+    };
+    loadPorts();
+    
+    const handleSerialConnect = async (event: any) => {
+      loadPorts();
+      // Auto-reconnect if a port is plugged in and we are disconnected
+      if (connectionStatus === 'disconnected' && event.target) {
+        try {
+          await onConnectSerial(event.target);
+          setConnectionError(null);
+        } catch (e) {
+          console.error("Auto-reconnect failed", e);
+        }
+      }
+    };
+    const handleSerialDisconnect = () => loadPorts();
+    
+    if ('serial' in navigator) {
+      (navigator as any).serial.addEventListener('connect', handleSerialConnect);
+      (navigator as any).serial.addEventListener('disconnect', handleSerialDisconnect);
+    }
+    
+    return () => {
+      if ('serial' in navigator) {
+        (navigator as any).serial.removeEventListener('connect', handleSerialConnect);
+        (navigator as any).serial.removeEventListener('disconnect', handleSerialDisconnect);
+      }
+    };
+  }, [connectionStatus, onConnectSerial]);
 
   const handleCodeClick = async (code: string) => {
     if (selectedCode === code) {
@@ -38,9 +89,12 @@ export default function OBDTab({ data, isSimulation, connectionStatus, onConnect
         const definition = await fetchDTCDefinition(code);
         if (definition) {
           setDtcDefinitions(prev => ({ ...prev, [code]: definition }));
+        } else {
+          setDtcDefinitions(prev => ({ ...prev, [code]: OBD_CODE_DEFINITIONS[code] || `No definition available for code ${code}.` }));
         }
       } catch (error) {
         console.error(error);
+        setDtcDefinitions(prev => ({ ...prev, [code]: OBD_CODE_DEFINITIONS[code] || `No definition available for code ${code}.` }));
       } finally {
         setIsFetchingDtc(prev => ({ ...prev, [code]: false }));
       }
@@ -190,18 +244,90 @@ export default function OBDTab({ data, isSimulation, connectionStatus, onConnect
                 <span className="text-xs font-bold uppercase tracking-widest">{status.label}</span>
               </div>
               <p className="text-[10px] opacity-60 font-mono">
-                {connectionStatus === 'connecting' ? 'Searching for Bluetooth devices...' : 
-                 connectionStatus === 'connected' ? 'Data stream active' : 'Connect adapter to see real telemetry'}
+                {connectionStatus === 'connecting' ? 'Searching for devices...' : 
+                 connectionStatus === 'connected' ? (connectedDeviceName ? `Connected to: ${connectedDeviceName}` : 'Data stream active') : 'Connect adapter to see real telemetry'}
               </p>
             </div>
           </div>
           {connectionStatus === 'disconnected' && (
-            <button 
-              onClick={handleConnect}
-              className="px-3 py-1.5 bg-car-accent text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-car-accent/80 transition-colors"
-            >
-              Connect
-            </button>
+            <div className="flex flex-col gap-2 items-end">
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleConnect}
+                  className="px-3 py-1.5 bg-car-accent text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-car-accent/80 transition-colors flex items-center gap-1"
+                  title="Connect via ELM327 Bluetooth"
+                >
+                  <Bluetooth className="w-3 h-3" /> ELM327 BT
+                </button>
+                
+                {availablePorts.length === 0 ? (
+                  <button 
+                    onClick={async () => {
+                      try {
+                        await onConnectSerial();
+                        setConnectionError(null);
+                      } catch (err) {
+                        setConnectionError(err instanceof Error ? err.message : 'Failed to connect via USB');
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-car-purple text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-car-purple/80 transition-colors flex items-center gap-1"
+                    title="Connect via 1260 USB Serial Cable"
+                  >
+                    <Usb className="w-3 h-3" /> USB 1260
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1 bg-white/5 p-1 rounded-lg border border-white/10">
+                    <select 
+                      className="bg-transparent border-none px-2 py-0.5 text-[10px] font-mono text-white focus:outline-none focus:ring-0 appearance-none cursor-pointer"
+                      value={selectedPortIndex}
+                      onChange={(e) => setSelectedPortIndex(Number(e.target.value))}
+                    >
+                      {availablePorts.map((port, idx) => {
+                        let name = `Serial Port ${idx + 1}`;
+                        try {
+                          const info = port.getInfo();
+                          if (info.usbVendorId) {
+                            name = `USB (${info.usbVendorId.toString(16).padStart(4, '0')}:${info.usbProductId?.toString(16).padStart(4, '0')})`;
+                          }
+                        } catch (e) {}
+                        return <option key={idx} value={idx} className="bg-zinc-900">{name}</option>;
+                      })}
+                    </select>
+                    <button 
+                      onClick={async () => {
+                        try {
+                          if (selectedPortIndex >= 0 && availablePorts[selectedPortIndex]) {
+                            await onConnectSerial(availablePorts[selectedPortIndex]);
+                          } else {
+                            await onConnectSerial();
+                          }
+                          setConnectionError(null);
+                        } catch (err) {
+                          setConnectionError(err instanceof Error ? err.message : 'Failed to connect via USB');
+                        }
+                      }}
+                      className="px-2 py-1 bg-car-purple text-white rounded text-[10px] font-bold uppercase tracking-widest hover:bg-car-purple/80 transition-colors"
+                    >
+                      CONNECT
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await onConnectSerial();
+                          setConnectionError(null);
+                        } catch (err) {
+                          setConnectionError(err instanceof Error ? err.message : 'Failed to connect via USB');
+                        }
+                      }}
+                      className="px-2 py-1 bg-white/10 text-white rounded text-[10px] font-bold uppercase tracking-widest hover:bg-white/20 transition-colors"
+                      title="Add new USB device"
+                    >
+                      +
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
         {connectionError && (
@@ -215,7 +341,7 @@ export default function OBDTab({ data, isSimulation, connectionStatus, onConnect
       {/* Main Gauges Section */}
       <div className="grid grid-cols-2 gap-4">
         {metrics.slice(0, 2).map((m) => (
-          <div key={m.label} className="glass-card p-6 rounded-3xl flex flex-col items-center gap-2 text-center border-b-2 border-car-accent/20">
+          <div key={m.label} className="glass-card p-6 rounded-2xl flex flex-col items-center gap-2 text-center border-b-2 border-car-accent/20">
             <m.icon size={24} className="text-car-accent/40" />
             <div className="flex items-baseline gap-1">
               <span className={`text-4xl font-bold font-mono tracking-tighter ${m.color}`}>{m.value}</span>
@@ -227,7 +353,7 @@ export default function OBDTab({ data, isSimulation, connectionStatus, onConnect
       </div>
 
       {/* Live Charts Section */}
-      <div className="glass-card p-6 rounded-3xl space-y-6">
+      <div className="glass-card p-6 rounded-2xl space-y-6">
         <div className="flex items-center gap-3 mb-4">
           <div className="p-2 bg-white/5 rounded-xl">
             <Activity className="text-white" size={20} />
@@ -355,7 +481,7 @@ export default function OBDTab({ data, isSimulation, connectionStatus, onConnect
       </div>
 
       {/* DTCs Section */}
-      <div className="glass-card p-6 rounded-3xl space-y-4">
+      <div className="glass-card p-6 rounded-2xl space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-car-danger/10 rounded-xl">
@@ -460,7 +586,7 @@ export default function OBDTab({ data, isSimulation, connectionStatus, onConnect
       </div>
 
       {/* Monitor Readiness Section */}
-      <div className="glass-card p-6 rounded-3xl space-y-4">
+      <div className="glass-card p-6 rounded-2xl space-y-4">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-car-success/10 rounded-xl">
             <ShieldCheck className="text-car-success" size={20} />
@@ -486,7 +612,7 @@ export default function OBDTab({ data, isSimulation, connectionStatus, onConnect
       </div>
 
       {/* AI Diagnosis Section */}
-      <div className="glass-card p-6 rounded-3xl space-y-4 relative overflow-hidden">
+      <div className="glass-card p-6 rounded-2xl space-y-4 relative overflow-hidden">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-car-accent/10 rounded-xl">

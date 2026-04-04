@@ -3,12 +3,13 @@ import { MapPin, Navigation, X, Minimize2, Search, ArrowRight, Key } from 'lucid
 import { motion, AnimatePresence } from 'motion/react';
 import { NavigationState } from '../types';
 import { cn } from '../lib/utils';
-import { GoogleMap, useJsApiLoader, Marker, DirectionsRenderer, TrafficLayer } from '@react-google-maps/api';
+import { GoogleMap, Marker, DirectionsRenderer, TrafficLayer } from '@react-google-maps/api';
 
 interface FloatingMapProps {
   navigation: NavigationState;
   setNavigation: (nav: NavigationState) => void;
   mapsApiKey: string;
+  isMapsLoaded: boolean;
 }
 
 const mapContainerStyle = {
@@ -97,9 +98,9 @@ const darkMapStyles = [
   },
 ];
 
-const libraries: ("places")[] = ["places"];
+const libraries: ("places" | "routes" | "geocoding" | "core")[] = ["places", "routes", "geocoding", "core"];
 
-export default function FloatingMap({ navigation, setNavigation, mapsApiKey }: FloatingMapProps) {
+export default function FloatingMap({ navigation, setNavigation, mapsApiKey, isMapsLoaded }: FloatingMapProps) {
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMini, setIsMini] = useState(false);
   const [size, setSize] = useState({ width: 320, height: 384 }); // Default 80x96 (w-80 h-96)
@@ -139,12 +140,6 @@ export default function FloatingMap({ navigation, setNavigation, mapsApiKey }: F
     window.addEventListener('touchend', stopResize);
   }, [handleResize, stopResize]);
 
-  const { isLoaded } = useJsApiLoader({
-    id: 'google-map-script',
-    googleMapsApiKey: mapsApiKey,
-    libraries
-  });
-
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -155,7 +150,7 @@ export default function FloatingMap({ navigation, setNavigation, mapsApiKey }: F
   }, []);
 
   useEffect(() => {
-    if (!isLoaded || !navigation.from || !navigation.to) return;
+    if (!isMapsLoaded || !navigation.from || !navigation.to) return;
 
     const fetchDirections = () => {
       const directionsService = new google.maps.DirectionsService();
@@ -208,7 +203,7 @@ export default function FloatingMap({ navigation, setNavigation, mapsApiKey }: F
     const intervalId = setInterval(fetchDirections, 120000);
 
     return () => clearInterval(intervalId);
-  }, [isLoaded, navigation.from, navigation.to, navigation.waypoints, location]);
+  }, [isMapsLoaded, navigation.from, navigation.to, navigation.waypoints, location]);
 
   if (!navigation.isActive) return null;
 
@@ -219,6 +214,8 @@ export default function FloatingMap({ navigation, setNavigation, mapsApiKey }: F
   return (
     <motion.div
       ref={resizeRef}
+      drag
+      dragMomentum={false}
       initial={{ opacity: 0, scale: 0.9, y: 20 }}
       animate={{ 
         opacity: 1, 
@@ -228,7 +225,7 @@ export default function FloatingMap({ navigation, setNavigation, mapsApiKey }: F
         height: isMinimized ? 64 : (isMini ? 160 : size.height),
       }}
       className={cn(
-        "fixed bottom-24 right-4 z-50 glass-card rounded-3xl overflow-hidden border border-car-accent/30 shadow-2xl transition-all duration-300",
+        "fixed bottom-24 right-4 z-50 glass-card rounded-2xl overflow-hidden border border-car-accent/30 shadow-2xl transition-all duration-300",
         isMinimized && "rounded-full"
       )}
     >
@@ -307,7 +304,7 @@ export default function FloatingMap({ navigation, setNavigation, mapsApiKey }: F
 
           {/* Map View */}
           <div className="flex-1 relative bg-[#151619] overflow-hidden">
-            {isLoaded && mapsApiKey ? (
+            {isMapsLoaded && mapsApiKey ? (
               <GoogleMap
                 mapContainerStyle={mapContainerStyle}
                 center={location || { lat: 37.7749, lng: -122.4194 }}

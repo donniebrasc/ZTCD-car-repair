@@ -4,7 +4,7 @@ import { Trip, NavigationState } from '../types';
 import { getRouteRecommendation } from '../services/geminiService';
 import { motion } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
-import { GoogleMap, useJsApiLoader, Marker, Autocomplete, TrafficLayer } from '@react-google-maps/api';
+import { GoogleMap, Marker, Autocomplete, TrafficLayer, DirectionsRenderer } from '@react-google-maps/api';
 import { cn } from '../lib/utils';
 
 interface GPSTabProps {
@@ -13,6 +13,7 @@ interface GPSTabProps {
   navigation: NavigationState;
   setNavigation: (nav: NavigationState) => void;
   mapsApiKey: string;
+  isMapsLoaded: boolean;
 }
 
 const mapContainerStyle = {
@@ -108,9 +109,32 @@ const MOCK_SPEED_TRAPS = [
   { id: '3', lat: 37.7694, lng: -122.4862, reportedAt: Date.now() - 1000 * 60 * 120 }, // 2 hours ago
 ];
 
-const libraries: ("places")[] = ["places"];
+const libraries: ("places" | "routes" | "geocoding" | "core")[] = ["places", "routes", "geocoding", "core"];
 
-export default function GPSTab({ isRecording, trips, navigation, setNavigation, mapsApiKey }: GPSTabProps) {
+// Helper to strip HTML tags from Google Maps directions
+const stripHtml = (html: string) => {
+  const tmp = document.createElement("DIV");
+  tmp.innerHTML = html;
+  return tmp.textContent || tmp.innerText || "";
+};
+
+// Helper to calculate distance between two coordinates in meters
+const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const R = 6371e3; // metres
+  const φ1 = lat1 * Math.PI/180; // φ, λ in radians
+  const φ2 = lat2 * Math.PI/180;
+  const Δφ = (lat2-lat1) * Math.PI/180;
+  const Δλ = (lon2-lon1) * Math.PI/180;
+
+  const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+            Math.cos(φ1) * Math.cos(φ2) *
+            Math.sin(Δλ/2) * Math.sin(Δλ/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+  return R * c; // in metres
+};
+
+export default function GPSTab({ isRecording, trips, navigation, setNavigation, mapsApiKey, isMapsLoaded }: GPSTabProps) {
   const [recommendation, setRecommendation] = useState<string | null>(null);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -122,67 +146,253 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
   const [searchBox, setSearchBox] = useState<google.maps.places.Autocomplete | null>(null);
   const [searchValue, setSearchValue] = useState("");
   const [isListening, setIsListening] = useState(false);
+  const [isWakeWordActive, setIsWakeWordActive] = useState(false);
+  const [isAwake, setIsAwake] = useState(false);
+  
+  // Directions state
+  const [directions, setDirections] = useState<google.maps.DirectionsResult | null>(null);
+  const [currentStepIndex, setCurrentStepIndex] = useState<number>(0);
+  const [spokenSteps, setSpokenSteps] = useState<Set<number>>(new Set());
+  const [routeError, setRouteError] = useState<string | null>(null);
 
-  const startListening = () => {
+  const recognitionRef = useRef<any>(null);
+  const awakeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
+
+  // Fetch directions when navigation changes
+  useEffect(() => {
+    if (!isMapsLoaded || !navigation.isActive || !navigation.to || !location) {
+      if (!navigation.isActive) {
+        setDirections(null);
+        setCurrentStepIndex(0);
+        setSpokenSteps(new Set());
+      }
+      return;
+    }
+
+    const directionsService = new google.maps.DirectionsService();
+    
+    const waypoints = (navigation.waypoints || []).map(wp => ({
+      location: new google.maps.LatLng(wp.lat, wp.lng),
+      stopover: true
+    }));
+
+    directionsService.route(
+      {
+        origin: new google.maps.LatLng(location.lat, location.lng),
+        destination: navigation.to,
+        waypoints: waypoints,
+        travelMode: google.maps.TravelMode.DRIVING,
+      },
+      (result, status) => {
+        if (status === google.maps.DirectionsStatus.OK && result) {
+          setDirections(result);
+          setCurrentStepIndex(0);
+          setSpokenSteps(new Set());
+          setRouteError(null);
+          
+          // Speak the first instruction
+          const firstStep = result.routes[0].legs[0].steps[0];
+          if (firstStep) {
+            speakDirection(`Starting navigation. ${stripHtml(firstStep.instructions)}`);
+            setSpokenSteps(new Set([0]));
+          }
+        } else {
+          console.error(`Error fetching directions: ${status}`);
+          setRouteError(`Could not find route to ${navigation.to}`);
+          setDirections(null);
+        }
+      }
+    );
+  }, [navigation.isActive, navigation.to, navigation.waypoints, isMapsLoaded]); // Intentionally omitting location to avoid recalculating on every move, unless we want to reroute
+
+  // Track progress along the route
+  useEffect(() => {
+    if (!directions || !location || !navigation.isActive) return;
+
+    const route = directions.routes[0];
+    if (!route || !route.legs || route.legs.length === 0) return;
+
+    const currentLeg = route.legs[0]; // Assuming single leg for simplicity, or we'd need to track legs too
+    const steps = currentLeg.steps;
+    
+    if (currentStepIndex >= steps.length) return;
+
+    const currentStep = steps[currentStepIndex];
+    const nextStep = steps[currentStepIndex + 1];
+
+    // Check distance to the END of the current step (which is the start of the next step)
+    const endLoc = currentStep.end_location;
+    const distanceToTurn = getDistance(location.lat, location.lng, endLoc.lat(), endLoc.lng());
+
+    // If we are within 100 meters of the turn, speak the next instruction
+    if (distanceToTurn < 100 && nextStep && !spokenSteps.has(currentStepIndex + 1)) {
+      speakDirection(stripHtml(nextStep.instructions));
+      setSpokenSteps(prev => new Set(prev).add(currentStepIndex + 1));
+      setCurrentStepIndex(currentStepIndex + 1);
+    }
+  }, [location, directions, currentStepIndex, spokenSteps, navigation.isActive]);
+
+  const speakDirection = (text: string) => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel(); // Cancel any ongoing speech
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+  };
+
+  const processCommand = (command: string) => {
+    setSearchValue(command);
+    if (command.includes('navigate to') || command.includes('set destination to') || command.includes('go to') || command.includes('directions to')) {
+      const destination = command.replace(/.*(navigate to|set destination to|go to|directions to)\s+/g, '').trim();
+      setNavigation({ from: 'Current Location', to: destination, isActive: true, waypoints: [] });
+      speakDirection(`Navigating to ${destination}`);
+    } else if (command.includes('add waypoint') || command.includes('add stop')) {
+      const waypoint = command.replace(/.*(add waypoint|add stop)\s+/g, '').trim();
+      const geocoder = new google.maps.Geocoder();
+      geocoder.geocode({ address: waypoint }, (results, status) => {
+        if (status === 'OK' && results && results[0]) {
+          const loc = results[0].geometry.location;
+          const currentWaypoints = navigation.waypoints || [];
+          setNavigation({ 
+            ...navigation, 
+            waypoints: [...currentWaypoints, { lat: loc.lat(), lng: loc.lng() }],
+            isActive: true 
+          });
+          speakDirection(`Added stop at ${waypoint}`);
+        }
+      });
+    } else if (command.includes('stop navigation') || command.includes('cancel navigation')) {
+       setNavigation({ ...navigation, isActive: false });
+       speakDirection("Navigation cancelled");
+    } else {
+      setNavigation({ ...navigation, to: command, isActive: true });
+      speakDirection(`Navigating to ${command}`);
+    }
+  };
+
+  const toggleWakeWord = () => {
+    if (isWakeWordActive) {
+      setIsWakeWordActive(false);
+      setIsListening(false);
+      setIsAwake(false);
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    } else {
+      startContinuousListening();
+    }
+  };
+
+  const startContinuousListening = async () => {
     const win = window as any;
     if (!('webkitSpeechRecognition' in win) && !('SpeechRecognition' in win)) {
       alert('Speech recognition is not supported in this browser.');
       return;
     }
 
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(track => track.stop());
+      }
+    } catch (err: any) {
+      console.error("Microphone access error:", err);
+      if (err.name === 'NotAllowedError' || err.message?.includes('Permission denied')) {
+        setIsWakeWordActive(false);
+        setIsListening(false);
+        setIsAwake(false);
+        return;
+      }
+    }
+
     const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
     const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
     
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = false;
     
     recognition.onstart = () => {
+      setIsWakeWordActive(true);
       setIsListening(true);
     };
     
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript.toLowerCase();
-      setSearchValue(transcript);
+      const current = event.resultIndex;
+      const transcript = event.results[current][0].transcript.toLowerCase();
       
-      if (transcript.includes('navigate to') || transcript.includes('set destination to') || transcript.includes('go to')) {
-        const destination = transcript.replace(/navigate to|set destination to|go to/g, '').trim();
-        setNavigation({ from: 'Current Location', to: destination, isActive: true, waypoints: [] });
-      } else if (transcript.includes('add waypoint') || transcript.includes('add stop')) {
-        const waypoint = transcript.replace(/add waypoint|add stop/g, '').trim();
-        const geocoder = new google.maps.Geocoder();
-        geocoder.geocode({ address: waypoint }, (results, status) => {
-          if (status === 'OK' && results && results[0]) {
-            const loc = results[0].geometry.location;
-            const currentWaypoints = navigation.waypoints || [];
-            setNavigation({ 
-              ...navigation, 
-              waypoints: [...currentWaypoints, { lat: loc.lat(), lng: loc.lng() }],
-              isActive: true 
-            });
-          }
-        });
-      } else {
-        setNavigation({ ...navigation, to: transcript, isActive: true });
+      if (transcript.includes('talk to me goose')) {
+        setIsAwake(true);
+        if (awakeTimeoutRef.current) clearTimeout(awakeTimeoutRef.current);
+        awakeTimeoutRef.current = setTimeout(() => setIsAwake(false), 8000);
+
+        const commandParts = transcript.split('talk to me goose');
+        const command = commandParts[commandParts.length - 1].trim();
+        
+        if (command) {
+          processCommand(command);
+          setIsAwake(false);
+        } else {
+          speakDirection("I'm listening");
+        }
+      } else if (isAwake) {
+        processCommand(transcript);
+        setIsAwake(false);
       }
     };
     
     recognition.onerror = (event: any) => {
+      if (event.error === 'aborted' || event.error === 'no-speech') {
+        // 'aborted' happens when we manually stop it or when speech synthesis plays.
+        // 'no-speech' happens when it times out listening.
+        // Both are normal and will be handled by onend restarting if needed.
+        return;
+      }
       console.error('Speech recognition error', event.error);
-      setIsListening(false);
+      if (event.error === 'not-allowed') {
+        setIsWakeWordActive(false);
+        setIsListening(false);
+        setIsAwake(false);
+      }
     };
     
     recognition.onend = () => {
-      setIsListening(false);
+      if (isWakeWordActive && recognitionRef.current) {
+        try {
+          recognitionRef.current.start();
+        } catch (e) {
+          console.error("Failed to restart recognition", e);
+        }
+      } else {
+        setIsListening(false);
+        setIsAwake(false);
+      }
     };
     
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (e) {
+      console.error("Failed to start recognition", e);
+    }
   };
 
-  const { isLoaded } = useJsApiLoader({
-    id: 'google-map-script',
-    googleMapsApiKey: mapsApiKey,
-    libraries
-  });
+  useEffect(() => {
+    return () => {
+      setIsWakeWordActive(false);
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      if (awakeTimeoutRef.current) {
+        clearTimeout(awakeTimeoutRef.current);
+      }
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -241,7 +451,7 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
         const address = place.formatted_address || place.name || `${lat}, ${lng}`;
         
         map?.panTo({ lat, lng });
-        setFollowUser(false);
+        setFollowUser(true);
         setNavigation({ from: 'Current Location', to: address, isActive: true });
         setSearchValue("");
       }
@@ -270,7 +480,7 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
             isActive: true 
           });
         }
-        setFollowUser(false);
+        setFollowUser(true);
       });
     }
   };
@@ -278,7 +488,7 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
   return (
     <div className="space-y-6">
       {/* Navigation Controls */}
-      <div className="glass-card p-6 rounded-3xl space-y-4 hud-border">
+      <div className="glass-card p-6 rounded-2xl space-y-4">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-car-accent/10 rounded-xl">
             <Navigation className="text-car-accent" size={20} />
@@ -302,20 +512,55 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
         </button>
 
         <button
-          onClick={startListening}
+          onClick={toggleWakeWord}
           className={cn(
-            "w-full py-3 rounded-xl font-bold text-xs tracking-widest transition-all flex items-center justify-center gap-2 border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10",
-            isListening && "bg-car-accent/20 text-car-accent border-car-accent/30 animate-pulse"
+            "w-full py-3 rounded-xl font-bold text-xs tracking-widest transition-all flex items-center justify-center gap-2 border border-white/10",
+            isWakeWordActive 
+              ? isAwake 
+                ? "bg-car-success/20 text-car-success border-car-success/30 animate-pulse" 
+                : "bg-car-accent/20 text-car-accent border-car-accent/30"
+              : "bg-white/5 text-white/60 hover:text-white hover:bg-white/10"
           )}
         >
-          <Mic size={14} className={isListening ? "animate-bounce" : ""} />
-          {isListening ? "LISTENING..." : '"TALK TO ME GOOSE"'}
+          <Mic size={14} className={isAwake ? "animate-bounce" : ""} />
+          {isWakeWordActive 
+            ? isAwake 
+              ? "LISTENING FOR COMMAND..." 
+              : "SAY 'TALK TO ME GOOSE'" 
+            : "ENABLE VOICE ACTIVATION"}
         </button>
+        
+        {routeError && (
+          <div className="p-3 bg-car-danger/20 border border-car-danger/30 rounded-xl flex items-center gap-2 text-car-danger text-xs">
+            <AlertCircle size={14} />
+            {routeError}
+          </div>
+        )}
+        
+        {directions && navigation.isActive && (
+          <div className="p-4 bg-black/40 rounded-xl border border-white/10 space-y-2">
+            <div className="flex justify-between items-center">
+              <span className="text-xs font-bold text-white/80">Current Route</span>
+              <span className="text-xs font-mono text-car-accent">
+                {directions.routes[0]?.legs[0]?.duration?.text} ({directions.routes[0]?.legs[0]?.distance?.text})
+              </span>
+            </div>
+            <p className="text-sm text-white font-medium">
+              To: {navigation.to}
+            </p>
+            {directions.routes[0]?.legs[0]?.steps[currentStepIndex] && (
+              <div className="mt-3 p-3 bg-white/5 rounded-lg border border-white/10">
+                <p className="text-xs text-white/60 uppercase tracking-widest mb-1">Next Turn</p>
+                <p className="text-sm text-white font-bold" dangerouslySetInnerHTML={{ __html: directions.routes[0].legs[0].steps[currentStepIndex].instructions }} />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Map View */}
-      <div className="relative h-96 rounded-3xl overflow-hidden glass-card border-white/5 flex flex-col scanline-overlay">
-        {isLoaded && mapsApiKey ? (
+      <div className="relative h-96 rounded-2xl overflow-hidden glass-card border-white/5 flex flex-col">
+        {isMapsLoaded && mapsApiKey ? (
           <>
             {/* Search Bar Overlay */}
             <div className="absolute top-4 left-4 right-16 z-10">
@@ -336,11 +581,11 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
                     type="button"
                     onClick={(e) => {
                       e.preventDefault();
-                      startListening();
+                      toggleWakeWord();
                     }}
                     className={cn(
                       "absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-colors",
-                      isListening ? "bg-car-danger/20 text-car-danger animate-pulse" : "text-white/40 hover:text-white hover:bg-white/10"
+                      isWakeWordActive ? "bg-car-accent/20 text-car-accent animate-pulse" : "text-white/40 hover:text-white hover:bg-white/10"
                     )}
                     title="Voice Search"
                   >
@@ -366,6 +611,21 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
               }}
             >
               {showTraffic && <TrafficLayer />}
+              
+              {directions && navigation.isActive && (
+                <DirectionsRenderer
+                  directions={directions}
+                  options={{
+                    suppressMarkers: false,
+                    polylineOptions: {
+                      strokeColor: '#F27D26',
+                      strokeWeight: 5,
+                      strokeOpacity: 0.8,
+                    }
+                  }}
+                />
+              )}
+              
               {location && (
                 <Marker 
                   position={location} 
@@ -402,8 +662,8 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
                 />
               ))}
 
-              {/* Waypoint Markers */}
-              {navigation.waypoints?.map((wp, i) => (
+              {/* Waypoint Markers (only show if not using DirectionsRenderer markers) */}
+              {!directions && navigation.waypoints?.map((wp, i) => (
                 <Marker
                   key={`wp-${i}`}
                   position={wp}
@@ -503,7 +763,7 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
       </div>
 
       {/* AI Route Recommendation */}
-      <div className="glass-card p-6 rounded-3xl space-y-4">
+      <div className="glass-card p-6 rounded-2xl space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-car-accent/10 rounded-xl">

@@ -1,5 +1,5 @@
 {
   "name": "ZTCD_V3 - Vehicle Telemetry & Diagnostics",
   "description": "A comprehensive vehicle health and trip monitoring system featuring real-time OBD diagnostics, driving behavior analysis, and AI-powered route optimization.",
-  "requestFramePermissions": ["geolocation", "bluetooth", "microphone"]
+  "requestFramePermissions": ["geolocation", "bluetooth", "microphone", "serial"]
 }

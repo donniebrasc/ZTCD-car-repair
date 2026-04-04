@@ -4,7 +4,7 @@ import { DamagePoint, Trip, SensorPoint } from '../types';
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, AreaChart, Area } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
-import { GoogleMap, useJsApiLoader, Polyline, Marker, InfoWindow } from '@react-google-maps/api';
+import { GoogleMap, Polyline, Marker, InfoWindow } from '@react-google-maps/api';
 
 interface DamageLogTabProps {
   score: number;
@@ -13,6 +13,7 @@ interface DamageLogTabProps {
   trips: Trip[];
   isRecording: boolean;
   mapsApiKey: string;
+  isMapsLoaded: boolean;
   onUpdateTrip: (trip: Trip) => void;
 }
 
@@ -43,19 +44,13 @@ const darkMapStyles = [
   { featureType: "water", elementType: "labels.text.stroke", stylers: [{ color: "#17263c" }] },
 ];
 
-const libraries: ("places")[] = ["places"];
+const libraries: ("places" | "routes" | "geocoding" | "core")[] = ["places", "routes", "geocoding", "core"];
 
-export default function DamageLogTab({ score, history, sensorHistory, trips, isRecording, mapsApiKey, onUpdateTrip }: DamageLogTabProps) {
+export default function DamageLogTab({ score, history, sensorHistory, trips, isRecording, mapsApiKey, isMapsLoaded, onUpdateTrip }: DamageLogTabProps) {
   const [expandedTripId, setExpandedTripId] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<{ type: string, timestamp: number, lat: number, lng: number } | null>(null);
   const [newMarkerPos, setNewMarkerPos] = useState<{ lat: number, lng: number } | null>(null);
   const [markerNote, setMarkerNote] = useState('');
-
-  const { isLoaded } = useJsApiLoader({
-    id: 'google-map-script',
-    googleMapsApiKey: mapsApiKey,
-    libraries
-  });
 
   React.useEffect(() => {
     setSelectedEvent(null);
@@ -130,10 +125,10 @@ export default function DamageLogTab({ score, history, sensorHistory, trips, isR
     URL.revokeObjectURL(url);
   };
 
-  const getScoreColor = (s: number) => {
-    if (s < 20) return 'text-car-success';
-    if (s < 50) return 'text-car-warning';
-    return 'text-car-danger';
+  const getScoreDetails = (s: number) => {
+    if (s < 20) return { color: 'text-car-success', stroke: '#10b981', label: 'EXCELLENT', bg: 'bg-car-success/10', border: 'border-car-success/20' };
+    if (s < 50) return { color: 'text-car-warning', stroke: '#f59e0b', label: 'FAIR', bg: 'bg-car-warning/10', border: 'border-car-warning/20' };
+    return { color: 'text-car-danger', stroke: '#ef4444', label: 'POOR', bg: 'bg-car-danger/10', border: 'border-car-danger/20' };
   };
 
   const renderRoute = (trip: Trip) => {
@@ -147,7 +142,7 @@ export default function DamageLogTab({ score, history, sensorHistory, trips, isR
       );
     }
 
-    if (!isLoaded || !mapsApiKey) {
+    if (!isMapsLoaded || !mapsApiKey) {
       return (
         <div className="flex flex-col items-center justify-center h-full text-white/20">
           <Key size={24} />
@@ -352,33 +347,45 @@ export default function DamageLogTab({ score, history, sensorHistory, trips, isR
       </div>
 
       {/* Live Damage Score */}
-      <div className="glass-card p-6 rounded-3xl flex flex-col items-center gap-4 text-center">
-        <div className="relative">
-          <svg className="w-32 h-32 transform -rotate-90">
+      <div className="glass-card p-6 rounded-2xl flex flex-col items-center gap-4 text-center relative overflow-hidden">
+        <div className="absolute inset-0 opacity-10" style={{ background: `radial-gradient(circle at center, ${getScoreDetails(score).stroke} 0%, transparent 70%)` }} />
+        <div className="relative z-10">
+          <svg className="w-40 h-40 transform -rotate-90 drop-shadow-2xl">
+            <defs>
+              <linearGradient id="scoreGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor={getScoreDetails(score).stroke} stopOpacity="0.5" />
+                <stop offset="100%" stopColor={getScoreDetails(score).stroke} stopOpacity="1" />
+              </linearGradient>
+            </defs>
             <circle
-              cx="64"
-              cy="64"
-              r="58"
+              cx="80"
+              cy="80"
+              r="72"
               stroke="currentColor"
-              strokeWidth="8"
+              strokeWidth="12"
               fill="transparent"
               className="text-white/5"
             />
             <circle
-              cx="64"
-              cy="64"
-              r="58"
-              stroke="currentColor"
-              strokeWidth="8"
+              cx="80"
+              cy="80"
+              r="72"
+              stroke="url(#scoreGradient)"
+              strokeWidth="12"
               fill="transparent"
-              strokeDasharray={364}
-              strokeDashoffset={364 - (364 * score) / 100}
-              className={cn("transition-all duration-500", getScoreColor(score))}
+              strokeDasharray={452}
+              strokeDashoffset={452 - (452 * score) / 100}
+              strokeLinecap="round"
+              className="transition-all duration-1000 ease-out"
             />
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <span className="text-3xl font-bold font-mono">{Math.round(score)}</span>
-            <span className="text-[8px] uppercase tracking-widest text-white/40">Damage Score</span>
+            <span className={cn("text-5xl font-bold font-mono tracking-tighter drop-shadow-md", getScoreDetails(score).color)}>
+              {Math.round(score)}
+            </span>
+            <span className="text-[10px] uppercase tracking-widest text-white/60 font-bold mt-1">
+              {getScoreDetails(score).label}
+            </span>
           </div>
         </div>
         
@@ -489,63 +496,73 @@ export default function DamageLogTab({ score, history, sensorHistory, trips, isR
               <p className="text-xs text-white/40 italic">No trips recorded yet. Start a trip to begin logging data.</p>
             </div>
           ) : (
-            trips.map((trip) => (
+            trips.map((trip) => {
+              const details = getScoreDetails(trip.averageDamageScore);
+              return (
               <motion.div
                 key={trip.id}
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 onClick={() => setExpandedTripId(expandedTripId === trip.id ? null : trip.id)}
                 className={cn(
-                  "glass-card p-4 rounded-2xl flex flex-col group cursor-pointer hover:bg-white/5 transition-all duration-300",
-                  expandedTripId === trip.id && "bg-white/5 border-car-accent/30"
+                  "p-4 rounded-2xl flex flex-col group cursor-pointer transition-all duration-300 border backdrop-blur-md",
+                  expandedTripId === trip.id ? `bg-black/60 ${details.border}` : `bg-black/40 border-white/5 hover:border-white/20`
                 )}
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
                     <div className={cn(
-                      "w-10 h-10 rounded-xl flex items-center justify-center",
-                      trip.averageDamageScore < 30 ? "bg-car-success/10 text-car-success" : "bg-car-danger/10 text-car-danger"
+                      "w-12 h-12 rounded-2xl flex items-center justify-center shadow-inner",
+                      details.bg, details.color
                     )}>
-                      <Activity size={20} />
+                      <Activity size={24} />
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-sm">
-                          {new Date(trip.startTime).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        <span className="font-bold text-sm text-white/90">
+                          {new Date(trip.startTime).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                         </span>
-                        <span className="text-[10px] text-white/40 font-mono">
+                        <span className="text-[10px] text-white/40 font-mono bg-white/5 px-2 py-0.5 rounded-full">
                           {new Date(trip.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
-                      <div className="flex items-center gap-3 mt-1">
-                        <div className="flex items-center gap-1 text-[10px] text-white/60">
-                          <Clock size={10} />
-                          {Math.round((trip.endTime! - trip.startTime) / 60000)} min
+                      <div className="flex items-center gap-4 mt-2">
+                        <div className="flex items-center gap-1.5 text-[10px] text-white/60 font-mono">
+                          <Clock size={12} className="text-car-accent" />
+                          {Math.round((trip.endTime! - trip.startTime) / 60000)} MIN
                         </div>
-                        <div className="flex items-center gap-1 text-[10px] text-white/60">
-                          <AlertTriangle size={10} className={trip.events.length > 0 ? "text-car-warning" : "text-white/20"} />
-                          {trip.events.length} events
+                        <div className="flex items-center gap-1.5 text-[10px] text-white/60 font-mono">
+                          <MapPin size={12} className="text-car-cyan" />
+                          {trip.distance.toFixed(1)} MI
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-white/60 font-mono">
+                          <AlertTriangle size={12} className={trip.events.length > 0 ? "text-car-warning" : "text-white/20"} />
+                          {trip.events.length} EVT
                         </div>
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-3">
                     <button
                       onClick={(e) => exportTripData(trip, e)}
-                      className="p-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-white/40 hover:text-white transition-colors mr-2"
+                      className="p-2 bg-white/5 hover:bg-white/10 rounded-xl text-white/40 hover:text-white transition-colors"
                       title="Export trip data"
                     >
-                      <Download size={14} />
+                      <Download size={16} />
                     </button>
-                    <div className="text-right">
-                      <div className="text-xs font-bold font-mono">{Math.round(trip.averageDamageScore)}</div>
-                      <div className="text-[8px] text-white/40 uppercase tracking-tighter">Avg Score</div>
+                    <div className="text-right flex flex-col items-end">
+                      <div className={cn("text-lg font-bold font-mono leading-none", details.color)}>
+                        {Math.round(trip.averageDamageScore)}
+                      </div>
+                      <div className="text-[8px] text-white/40 uppercase tracking-widest mt-1">Avg Score</div>
                     </div>
-                    {expandedTripId === trip.id ? (
-                      <ChevronDown size={16} className="text-car-accent" />
-                    ) : (
-                      <ChevronRight size={16} className="text-white/20 group-hover:text-car-accent transition-colors" />
-                    )}
+                    <div className={cn("p-1 rounded-full transition-colors", expandedTripId === trip.id ? "bg-white/10" : "")}>
+                      {expandedTripId === trip.id ? (
+                        <ChevronDown size={20} className="text-white" />
+                      ) : (
+                        <ChevronRight size={20} className="text-white/40 group-hover:text-white" />
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -580,6 +597,11 @@ export default function DamageLogTab({ score, history, sensorHistory, trips, isR
                                 />
                                 <YAxis hide domain={[0, 100]} />
                                 <XAxis hide />
+                                <Tooltip 
+                                  contentStyle={{ backgroundColor: '#0f1012', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', fontSize: '10px' }}
+                                  itemStyle={{ padding: '0' }}
+                                  labelStyle={{ display: 'none' }}
+                                />
                               </AreaChart>
                             </ResponsiveContainer>
                           </div>
@@ -616,7 +638,8 @@ export default function DamageLogTab({ score, history, sensorHistory, trips, isR
                   )}
                 </AnimatePresence>
               </motion.div>
-            ))
+            );
+          })
           )}
         </div>
       </div>

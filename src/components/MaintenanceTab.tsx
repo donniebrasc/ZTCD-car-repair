@@ -63,7 +63,7 @@ export default function MaintenanceTab({ tasks, totalMileage, onCompleteTask, on
   return (
     <div className="space-y-6 pb-24">
       {/* Header Stats */}
-      <div className="glass-card p-6 rounded-3xl border border-white/5 relative overflow-hidden">
+      <div className="glass-card p-6 rounded-2xl border border-white/5 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-32 h-32 bg-car-accent/10 rounded-full blur-3xl -mr-10 -mt-10" />
         <div className="flex items-center gap-4 mb-4">
           <div className="p-3 bg-car-accent/20 text-car-accent rounded-2xl">
