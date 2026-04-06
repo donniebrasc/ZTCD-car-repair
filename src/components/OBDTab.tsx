@@ -331,9 +331,19 @@ export default function OBDTab({ data, isSimulation, connectionStatus, connected
           )}
         </div>
         {connectionError && (
-          <div className="flex items-center gap-2 p-3 bg-car-danger/10 border border-car-danger/20 rounded-xl text-car-danger">
-            <AlertCircle size={14} />
-            <span className="text-xs">{connectionError}</span>
+          <div className="flex flex-col gap-2 p-3 bg-car-danger/10 border border-car-danger/20 rounded-xl text-car-danger">
+            <div className="flex items-center gap-2">
+              <AlertCircle size={14} className="shrink-0" />
+              <span className="text-xs">{connectionError}</span>
+            </div>
+            {connectionError.includes('iframe') && (
+              <button 
+                onClick={() => window.open(window.location.href, '_blank')}
+                className="self-start mt-1 px-3 py-1.5 bg-car-danger/20 hover:bg-car-danger/30 text-car-danger rounded-lg text-[10px] font-bold uppercase tracking-widest transition-colors"
+              >
+                Open in New Tab
+              </button>
+            )}
           </div>
         )}
       </div>

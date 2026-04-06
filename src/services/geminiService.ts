@@ -88,15 +88,24 @@ export const processVoiceCommand = async (text: string) => {
 export const runAIDiagnosis = async (data: OBDData) => {
   const ai = getAIInstance();
   const model = "gemini-3-flash-preview";
-  const prompt = `Analyze the following real-time vehicle OBD-II data and provide a plain-language health report. 
-  RPM: ${data.rpm}
-  Speed: ${Math.round(data.speed * 0.621371)} mph
-  Coolant Temp: ${Math.round((data.coolantTemp * 9/5) + 32)} °F
-  Throttle Position: ${data.throttlePos}%
-  Engine Load: ${data.load}%
-  Voltage: ${data.voltage}V
+  const prompt = `You are an expert automotive diagnostics AI. Analyze the following real-time vehicle OBD-II data and provide a comprehensive but plain-language health report. 
   
-  Identify any potential issues or maintenance needs. Keep it concise and professional.`;
+  Vehicle Telemetry:
+  - RPM: ${data.rpm}
+  - Speed: ${Math.round(data.speed * 0.621371)} mph
+  - Coolant Temp: ${Math.round((data.coolantTemp * 9/5) + 32)} °F
+  - Throttle Position: ${data.throttlePos}%
+  - Engine Load: ${data.load}%
+  - Voltage: ${data.voltage}V
+  - Active DTCs: ${data.dtcs.length > 0 ? data.dtcs.join(', ') : 'None'}
+  - Readiness Monitors: ${Object.entries(data.readiness).map(([k, v]) => `${k}: ${v ? 'Ready' : 'Not Ready'}`).join(', ')}
+  
+  Please provide:
+  1. A summary of the current vehicle health.
+  2. Identification of any anomalies or potential issues based on the telemetry and DTCs.
+  3. Specific, actionable recommendations for maintenance or repairs.
+  
+  Use plain English, avoid overly technical jargon where possible, and format the response clearly using Markdown. Keep the response under 300 words.`;
 
   try {
     const response = await ai.models.generateContent({

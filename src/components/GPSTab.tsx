@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Map as MapIcon, MapPin, Navigation, BrainCircuit, AlertCircle, Info, ArrowRight, Key, Search, AlertTriangle, Mic } from 'lucide-react';
 import { Trip, NavigationState } from '../types';
-import { getRouteRecommendation } from '../services/geminiService';
+import { getRouteRecommendation, processVoiceCommand } from '../services/geminiService';
 import { motion } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { GoogleMap, Marker, Autocomplete, TrafficLayer, DirectionsRenderer } from '@react-google-maps/api';
@@ -14,6 +14,8 @@ interface GPSTabProps {
   setNavigation: (nav: NavigationState) => void;
   mapsApiKey: string;
   isMapsLoaded: boolean;
+  onDiagnose?: () => Promise<string | void> | string | void;
+  onTabChange?: (tab: 'obd' | 'damage' | 'gps' | 'maintenance') => void;
 }
 
 const mapContainerStyle = {
@@ -134,7 +136,7 @@ const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => 
   return R * c; // in metres
 };
 
-export default function GPSTab({ isRecording, trips, navigation, setNavigation, mapsApiKey, isMapsLoaded }: GPSTabProps) {
+export default function GPSTab({ isRecording, trips, navigation, setNavigation, mapsApiKey, isMapsLoaded, onDiagnose, onTabChange }: GPSTabProps) {
   const [recommendation, setRecommendation] = useState<string | null>(null);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -243,33 +245,67 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
     }
   };
 
-  const processCommand = (command: string) => {
+  const processCommand = async (command: string) => {
     setSearchValue(command);
-    if (command.includes('navigate to') || command.includes('set destination to') || command.includes('go to') || command.includes('directions to')) {
-      const destination = command.replace(/.*(navigate to|set destination to|go to|directions to)\s+/g, '').trim();
-      setNavigation({ from: 'Current Location', to: destination, isActive: true, waypoints: [] });
-      speakDirection(`Navigating to ${destination}`);
-    } else if (command.includes('add waypoint') || command.includes('add stop')) {
-      const waypoint = command.replace(/.*(add waypoint|add stop)\s+/g, '').trim();
-      const geocoder = new google.maps.Geocoder();
-      geocoder.geocode({ address: waypoint }, (results, status) => {
-        if (status === 'OK' && results && results[0]) {
-          const loc = results[0].geometry.location;
-          const currentWaypoints = navigation.waypoints || [];
-          setNavigation({ 
-            ...navigation, 
-            waypoints: [...currentWaypoints, { lat: loc.lat(), lng: loc.lng() }],
-            isActive: true 
-          });
-          speakDirection(`Added stop at ${waypoint}`);
+    
+    // First, try to process with Gemini for complex commands
+    const result = await processVoiceCommand(command);
+    
+    let handled = false;
+    if (result.functionCalls) {
+      for (const call of result.functionCalls) {
+        if (call.name === 'setNavigation') {
+          const args = call.args as { from: string, to: string };
+          setNavigation({ from: args.from || 'Current Location', to: args.to, isActive: true, waypoints: [] });
+          speakDirection(`Navigating to ${args.to}`);
+          handled = true;
+        } else if (call.name === 'diagnoseVehicle') {
+          if (onTabChange) onTabChange('obd');
+          speakDirection("Running vehicle diagnosis...");
+          if (onDiagnose) {
+            const diag = await onDiagnose();
+            if (typeof diag === 'string') {
+              speakDirection(diag);
+            }
+          }
+          handled = true;
+        } else if (call.name === 'changeTab') {
+          const args = call.args as { tab: 'obd' | 'damage' | 'gps' | 'maintenance' };
+          if (onTabChange) onTabChange(args.tab);
+          speakDirection(`Switching to ${args.tab} tab`);
+          handled = true;
         }
-      });
-    } else if (command.includes('stop navigation') || command.includes('cancel navigation')) {
-       setNavigation({ ...navigation, isActive: false });
-       speakDirection("Navigation cancelled");
-    } else {
-      setNavigation({ ...navigation, to: command, isActive: true });
-      speakDirection(`Navigating to ${command}`);
+      }
+    }
+    
+    // Fallback to basic regex if Gemini didn't handle it
+    if (!handled) {
+      if (command.includes('navigate to') || command.includes('set destination to') || command.includes('go to') || command.includes('directions to')) {
+        const destination = command.replace(/.*(navigate to|set destination to|go to|directions to)\s+/g, '').trim();
+        setNavigation({ from: 'Current Location', to: destination, isActive: true, waypoints: [] });
+        speakDirection(`Navigating to ${destination}`);
+      } else if (command.includes('add waypoint') || command.includes('add stop')) {
+        const waypoint = command.replace(/.*(add waypoint|add stop)\s+/g, '').trim();
+        const geocoder = new google.maps.Geocoder();
+        geocoder.geocode({ address: waypoint }, (results, status) => {
+          if (status === 'OK' && results && results[0]) {
+            const loc = results[0].geometry.location;
+            const currentWaypoints = navigation.waypoints || [];
+            setNavigation({ 
+              ...navigation, 
+              waypoints: [...currentWaypoints, { lat: loc.lat(), lng: loc.lng() }],
+              isActive: true 
+            });
+            speakDirection(`Added stop at ${waypoint}`);
+          }
+        });
+      } else if (command.includes('stop navigation') || command.includes('cancel navigation')) {
+         setNavigation({ ...navigation, isActive: false });
+         speakDirection("Navigation cancelled");
+      } else {
+        setNavigation({ ...navigation, to: command, isActive: true });
+        speakDirection(`Navigating to ${command}`);
+      }
     }
   };
 

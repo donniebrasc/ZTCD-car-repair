@@ -14,7 +14,7 @@ interface Message {
 interface ChatAssistantProps {
   onTabChange: (tab: 'obd' | 'damage' | 'gps' | 'maintenance') => void;
   onSetNavigation: (from: string, to: string) => void;
-  onDiagnose: () => void;
+  onDiagnose: () => Promise<string | void> | string | void;
   onMusicControl: (action: string) => void;
 }
 
@@ -95,6 +95,8 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
 
     const result = await processVoiceCommand(text);
     
+    let diagnosisResult = "";
+
     if (result.functionCalls) {
       for (const call of result.functionCalls) {
         if (call.name === 'changeTab') {
@@ -104,7 +106,10 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
           const args = call.args as { from: string, to: string };
           onSetNavigation(args.from, args.to);
         } else if (call.name === 'diagnoseVehicle') {
-          onDiagnose();
+          const diag = await onDiagnose();
+          if (typeof diag === 'string') {
+            diagnosisResult = diag;
+          }
         } else if (call.name === 'controlMusic') {
           const args = call.args as { action: string };
           onMusicControl(args.action);
@@ -112,9 +117,11 @@ const ChatAssistant = forwardRef<ChatAssistantHandle, ChatAssistantProps>(({ onT
       }
     }
 
+    const finalMessageText = diagnosisResult || result.text || "Command executed successfully.";
+
     const aiMsg: Message = { 
       id: (Date.now() + 1).toString(), 
-      text: result.text || "Command executed successfully.", 
+      text: finalMessageText, 
       sender: 'ai', 
       timestamp: Date.now() 
     };

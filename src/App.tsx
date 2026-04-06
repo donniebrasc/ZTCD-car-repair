@@ -310,7 +310,7 @@ export default function App() {
             throw new Error("No device selected or found. Ensure your OBD-II adapter is powered on and in pairing mode.");
           }
           if (err.name === 'SecurityError') {
-            throw new Error("Bluetooth permission denied. Please allow Bluetooth access in your browser settings.");
+            throw new Error("Bluetooth permission denied. Please allow Bluetooth access in your browser settings (on Android, Chrome also requires Location permission). If you are viewing this in an iframe, please open the app in a new tab.");
           }
           throw err;
         });
@@ -803,6 +803,8 @@ export default function App() {
                 setNavigation={setNavigation}
                 mapsApiKey={apiKeys.maps}
                 isMapsLoaded={isMapsLoaded}
+                onDiagnose={handleAIDiagnosis}
+                onTabChange={(tab) => setActiveTab(tab)}
               />
             )}
             {activeTab === 'maintenance' && (

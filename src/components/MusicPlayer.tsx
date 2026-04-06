@@ -13,10 +13,10 @@ interface Song {
 }
 
 const PLAYLIST: Song[] = [
-  { id: '1', title: 'Midnight Drive', artist: 'Synthwave Pro', duration: '2:14', cover: 'https://picsum.photos/seed/music1/200/200', url: 'https://cdn.pixabay.com/audio/2022/05/27/audio_1808fbf07a.mp3' },
-  { id: '2', title: 'Cyber City', artist: 'Neon Dreams', duration: '2:08', cover: 'https://picsum.photos/seed/music2/200/200', url: 'https://cdn.pixabay.com/audio/2022/04/27/audio_308697920b.mp3' },
-  { id: '3', title: 'Electric Horizon', artist: 'Digital Nomad', duration: '2:30', cover: 'https://picsum.photos/seed/music3/200/200', url: 'https://cdn.pixabay.com/audio/2022/03/15/audio_c8b81755cb.mp3' },
-  { id: '4', title: 'Techno Pulse', artist: 'Bass Master', duration: '1:58', cover: 'https://picsum.photos/seed/music4/200/200', url: 'https://cdn.pixabay.com/audio/2022/01/18/audio_d0a13f69d2.mp3' },
+  { id: '1', title: 'Midnight Drive', artist: 'Synthwave Pro', duration: '6:12', cover: 'https://picsum.photos/seed/music1/200/200', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
+  { id: '2', title: 'Cyber City', artist: 'Neon Dreams', duration: '7:05', cover: 'https://picsum.photos/seed/music2/200/200', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3' },
+  { id: '3', title: 'Electric Horizon', artist: 'Digital Nomad', duration: '5:44', cover: 'https://picsum.photos/seed/music3/200/200', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3' },
+  { id: '4', title: 'Techno Pulse', artist: 'Bass Master', duration: '5:02', cover: 'https://picsum.photos/seed/music4/200/200', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3' },
 ];
 
 export interface MusicPlayerHandle {
