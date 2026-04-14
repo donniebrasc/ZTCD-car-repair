@@ -15,9 +15,10 @@ interface OBDTabProps {
   connectedDeviceName?: string | null;
   onConnectReal: () => Promise<void> | void;
   onConnectSerial: (port?: any) => Promise<void> | void;
+  shockWarning?: boolean;
 }
 
-export default function OBDTab({ data, isSimulation, connectionStatus, connectedDeviceName, onConnectReal, onConnectSerial }: OBDTabProps) {
+export default function OBDTab({ data, isSimulation, connectionStatus, connectedDeviceName, onConnectReal, onConnectSerial, shockWarning }: OBDTabProps) {
   const [diagnosis, setDiagnosis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
@@ -346,6 +347,25 @@ export default function OBDTab({ data, isSimulation, connectionStatus, connected
             )}
           </div>
         )}
+
+        <AnimatePresence>
+          {shockWarning && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="flex items-center gap-3 p-4 bg-car-danger/20 border border-car-danger/40 rounded-2xl text-car-danger"
+            >
+              <div className="p-2 bg-car-danger/20 rounded-full animate-pulse">
+                <AlertTriangle size={24} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold uppercase tracking-widest">Check Shocks</h3>
+                <p className="text-xs opacity-80">High wheel speed variance detected at speeds over 30mph. This may indicate degraded shock absorbers.</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Main Gauges Section */}

@@ -15,6 +15,7 @@ interface DamageLogTabProps {
   mapsApiKey: string;
   isMapsLoaded: boolean;
   onUpdateTrip: (trip: Trip) => void;
+  useEsp32Addon: boolean;
 }
 
 const mapContainerStyle = {
@@ -46,7 +47,7 @@ const darkMapStyles = [
 
 const libraries: ("places" | "routes" | "geocoding" | "core")[] = ["places", "routes", "geocoding", "core"];
 
-export default function DamageLogTab({ score, history, sensorHistory, trips, isRecording, mapsApiKey, isMapsLoaded, onUpdateTrip }: DamageLogTabProps) {
+export default function DamageLogTab({ score, history, sensorHistory, trips, isRecording, mapsApiKey, isMapsLoaded, onUpdateTrip, useEsp32Addon }: DamageLogTabProps) {
   const [expandedTripId, setExpandedTripId] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<{ type: string, timestamp: number, lat: number, lng: number } | null>(null);
   const [newMarkerPos, setNewMarkerPos] = useState<{ lat: number, lng: number } | null>(null);
@@ -348,6 +349,16 @@ export default function DamageLogTab({ score, history, sensorHistory, trips, isR
 
       {/* Live Damage Score */}
       <div className="glass-card p-6 rounded-2xl flex flex-col items-center gap-4 text-center relative overflow-hidden">
+        <div className="absolute top-4 right-4">
+          <span className={cn(
+            "text-[8px] font-mono uppercase tracking-widest px-2 py-1 rounded-full border",
+            useEsp32Addon 
+              ? "bg-car-purple/10 text-car-purple border-car-purple/20" 
+              : "bg-car-cyan/10 text-car-cyan border-car-cyan/20"
+          )}>
+            {useEsp32Addon ? "ESP32-S3 Array" : "Phone Sensors"}
+          </span>
+        </div>
         <div className="absolute inset-0 opacity-10" style={{ background: `radial-gradient(circle at center, ${getScoreDetails(score).stroke} 0%, transparent 70%)` }} />
         <div className="relative z-10">
           <svg className="w-40 h-40 transform -rotate-90 drop-shadow-2xl">

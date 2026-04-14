@@ -61,6 +61,9 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [showApiKeys, setShowApiKeys] = useState(false);
   const [sensorHistory, setSensorHistory] = useState<SensorPoint[]>([]);
+  const [useEsp32Addon, setUseEsp32Addon] = useState(() => {
+    return localStorage.getItem('ztcd_use_esp32') === 'true';
+  });
   const [apiKeys, setApiKeys] = useState({
     gemini: localStorage.getItem('ztcd_gemini_api_key') || process.env.GEMINI_API_KEY || '',
     maps: localStorage.getItem('ztcd_maps_api_key') || import.meta.env.VITE_MAPS_API_KEY || DEFAULT_MAPS_KEY,
@@ -103,6 +106,80 @@ export default function App() {
       }
     ];
   });
+
+  const [speedHistory, setSpeedHistory] = useState<number[]>([]);
+  const [shockWarning, setShockWarning] = useState<boolean>(false);
+
+  // Shock degradation calculation based on speed variance
+  useEffect(() => {
+    if (obdData.speed > 0) {
+      setSpeedHistory(prev => {
+        const newHistory = [...prev, obdData.speed].slice(-20); // Keep last 20 samples
+        return newHistory;
+      });
+    }
+  }, [obdData.speed]);
+
+  useEffect(() => {
+    if (speedHistory.length >= 10) {
+      const mean = speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
+      // Convert 30mph to km/h -> ~48.28 km/h
+      if (mean > 48) {
+        const variance = speedHistory.map(x => Math.pow(x - mean, 2)).reduce((a, b) => a + b, 0) / speedHistory.length;
+        const stdDev = Math.sqrt(variance);
+        
+        // If variance (stdDev) > 2.5% of Mean at speeds > 30mph, alert "Check Shocks"
+        if (stdDev > 0.025 * mean) {
+          setShockWarning(true);
+        } else {
+          setShockWarning(false);
+        }
+      } else {
+        setShockWarning(false);
+      }
+    }
+  }, [speedHistory]);
+
+  // Real Sensor Logic (Phone Accelerometer)
+  useEffect(() => {
+    if (isSimulation || useEsp32Addon) return;
+
+    let lastUpdate = Date.now();
+
+    const handleMotion = (event: DeviceMotionEvent) => {
+      const now = Date.now();
+      if (now - lastUpdate < 100) return; // Limit to ~10Hz
+      lastUpdate = now;
+
+      if (!event.accelerationIncludingGravity) return;
+      
+      const { x, y, z } = event.accelerationIncludingGravity;
+      // Calculate magnitude of acceleration (subtract 1G for gravity roughly if device is flat, or just use raw magnitude)
+      const magnitude = Math.sqrt((x || 0) ** 2 + (y || 0) ** 2 + (z || 0) ** 2) / 9.81; 
+      
+      const gyroX = event.rotationRate?.alpha || 0;
+      const gyroY = event.rotationRate?.beta || 0;
+      const gyroZ = event.rotationRate?.gamma || 0;
+      const gyroMag = Math.sqrt(gyroX ** 2 + gyroY ** 2 + gyroZ ** 2);
+
+      setSensorHistory(prev => {
+        const newHistory = [...prev, { accel: magnitude, gyro: gyroMag, timestamp: now }];
+        return newHistory.slice(-60);
+      });
+
+      // Simple damage score calculation based on real motion
+      setDamageScore(prev => {
+        let delta = 0;
+        // If magnitude is significantly higher than 1G (e.g., > 1.5G) or high rotation
+        if (isRecording && (magnitude > 1.5 || gyroMag > 45)) delta += 5; 
+        else if (prev > 0) delta -= 0.1; // Recovery
+        return Math.max(0, Math.min(100, prev + delta));
+      });
+    };
+
+    window.addEventListener('devicemotion', handleMotion);
+    return () => window.removeEventListener('devicemotion', handleMotion);
+  }, [isSimulation, isRecording, useEsp32Addon]);
 
   // Simulation logic
   useEffect(() => {
@@ -254,7 +331,18 @@ export default function App() {
     localStorage.setItem('ztcd_maintenance', JSON.stringify(maintenanceTasks));
   }, [maintenanceTasks]);
 
-  const startTrip = () => {
+  const startTrip = async () => {
+    if (!isSimulation && !useEsp32Addon && typeof (DeviceMotionEvent as any).requestPermission === 'function') {
+      try {
+        const permissionState = await (DeviceMotionEvent as any).requestPermission();
+        if (permissionState !== 'granted') {
+          console.warn('DeviceMotion permission not granted');
+        }
+      } catch (e) {
+        console.error('Error requesting DeviceMotion permission:', e);
+      }
+    }
+
     setIsRecording(true);
     setCurrentTrip({
       id: Math.random().toString(36).substr(2, 9),
@@ -448,6 +536,31 @@ export default function App() {
           }));
         }
       }
+
+      // Parse ESP32-S3 ADXL Sensor Data (e.g., ADXL:1.5,45.2)
+      const isEsp32Active = localStorage.getItem('ztcd_use_esp32') === 'true';
+      if (isEsp32Active && cleanLine.startsWith('ADXL:')) {
+        const parts = cleanLine.substring(5).split(',');
+        if (parts.length >= 2) {
+          const accel = parseFloat(parts[0]);
+          const gyro = parseFloat(parts[1]);
+          
+          if (!isNaN(accel) && !isNaN(gyro)) {
+            const now = Date.now();
+            setSensorHistory(prev => {
+              const newHistory = [...prev, { accel, gyro, timestamp: now }];
+              return newHistory.slice(-60);
+            });
+
+            setDamageScore(prev => {
+              let delta = 0;
+              if (isRecording && (accel > 1.5 || gyro > 45)) delta += 5; 
+              else if (prev > 0) delta -= 0.1; 
+              return Math.max(0, Math.min(100, prev + delta));
+            });
+          }
+        }
+      }
     });
   };
 
@@ -458,7 +571,29 @@ export default function App() {
       }
 
       const port = existingPort || await (navigator as any).serial.requestPort();
-      await port.open({ baudRate: 38400 }); // Standard baud rate for ELM327 / 1260 USB cables
+      
+      if (!port.readable && !port.writable) {
+        try {
+          await port.open({ baudRate: 38400 }); // Standard baud rate for ELM327 / 1260 USB cables
+        } catch (openError: any) {
+          if (openError.name === 'InvalidStateError') {
+            // Port is already open, we can proceed
+          } else {
+            try {
+              await port.open({ baudRate: 115200 }); // Fallback for ESP32-S3
+            } catch (fallbackError: any) {
+              try {
+                await port.open({ baudRate: 9600 }); // Fallback for older ELM327
+              } catch (finalError: any) {
+                if (finalError.message?.includes('Failed to open serial port')) {
+                  throw new Error("Failed to open serial port. It might be in use by another application or browser tab, or you may lack permissions.");
+                }
+                throw finalError;
+              }
+            }
+          }
+        }
+      }
 
       setConnectionStatus('connecting');
       setIsSimulation(false);
@@ -488,6 +623,13 @@ export default function App() {
       setConnectionStatus('disconnected');
       setConnectedDeviceName(null);
       let message = error instanceof Error ? error.message : "An unexpected Serial error occurred.";
+      
+      // Handle user cancellation gracefully
+      if (error.name === 'NotFoundError' || message.includes('No port selected by the user')) {
+        console.log("Serial port selection cancelled by user.");
+        return; // Just return, don't throw an error
+      }
+      
       if (error.name === 'SecurityError' || message.includes('permissions policy')) {
         message = "Serial port access is blocked by the browser. Please open the app in a new tab to use USB Serial.";
       }
@@ -793,6 +935,7 @@ export default function App() {
                 onUpdateTrip={(updatedTrip) => {
                   setTrips(prev => prev.map(t => t.id === updatedTrip.id ? updatedTrip : t));
                 }}
+                useEsp32Addon={useEsp32Addon}
               />
             )}
             {activeTab === 'gps' && (
@@ -888,6 +1031,57 @@ export default function App() {
                     isAdmin ? "translate-x-4" : "translate-x-0"
                   )} />
                 </button>
+              </div>
+
+              {/* ESP32-S3 Add-On Toggle */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/10">
+                  <div className="flex flex-col">
+                    <div className="flex items-center gap-2">
+                      <BrainCircuit className="text-car-purple" size={16} />
+                      <span className="text-sm font-medium text-white">ESP32-S3 Add-On</span>
+                    </div>
+                    <span className="text-[10px] text-white/40 mt-1">Use 4x ADXL345 array via I2C MUX</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newValue = !useEsp32Addon;
+                      setUseEsp32Addon(newValue);
+                      localStorage.setItem('ztcd_use_esp32', String(newValue));
+                    }}
+                    className={cn(
+                      "w-10 h-6 rounded-full transition-colors relative shrink-0",
+                      useEsp32Addon ? "bg-car-purple" : "bg-white/20"
+                    )}
+                  >
+                    <div className={cn(
+                      "absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform",
+                      useEsp32Addon ? "translate-x-4" : "translate-x-0"
+                    )} />
+                  </button>
+                </div>
+                
+                <AnimatePresence>
+                  {useEsp32Addon && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="p-3 bg-car-purple/10 rounded-xl border border-car-purple/20 space-y-2">
+                        <div className="text-[10px] uppercase tracking-widest text-car-purple font-mono font-bold">Pin Mapping</div>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-white/70 font-mono">
+                          <div className="flex justify-between"><span>I2C SDA:</span><span className="text-white">GPIO 21</span></div>
+                          <div className="flex justify-between"><span>I2C SCL:</span><span className="text-white">GPIO 22</span></div>
+                          <div className="flex justify-between"><span>UART TX:</span><span className="text-white">GPIO 17</span></div>
+                          <div className="flex justify-between"><span>UART RX:</span><span className="text-white">GPIO 18</span></div>
+                          <div className="flex justify-between col-span-2"><span>INT 1-4:</span><span className="text-white">GPIO 4, 5, 6, 7</span></div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
 
               <div className="space-y-4">
